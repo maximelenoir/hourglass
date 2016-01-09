@@ -1,0 +1,14 @@
+[package]
+name = "tzdata"
+version = "0.1.0"
+authors = ["Maxime Lenoir <lenoir.maxime0@gmail.com>"]
+
+description = "Timezone library"
+homepage = "https://github.com/maximelenoir/tzdata-rs"
+repository = "https://github.com/maximelenoir/tzdata-rs"
+keywords = ["timezone", "time"]
+license = "MIT"
+
+[dependencies]
+byteorder = "0.4.2"
+time = "0.1.34"
