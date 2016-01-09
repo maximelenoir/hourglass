@@ -1,5 +1,9 @@
 # tzdata-rs
+
 Timezone library for the Rust programming language
+
+[![Build Status](https://travis-ci.org/maximelenoir/tzdata-rs.svg?branch=master)](https://travis-ci.org/maximelenoir/tzdata-rs)
+[![Crate Version](https://img.shields.io/crates/v/tzdata.svg)](https://crates.io/crates/tzdata)
 
 The library provides basic support for timezone conversion.
 
