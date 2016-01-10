@@ -11,7 +11,7 @@ Add the following in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-tzdata = "0.1"
+tzdata = "0.*"
 ```
 
 And put this in your crate root:
