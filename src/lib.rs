@@ -67,16 +67,14 @@ impl Timezone {
     pub fn fixed(sec: i32) -> Self {
         Timezone {
             name: "UTC".to_owned(),
-            trans: vec![
-                Transition {
-                    utc: std::i64::MIN,
-                    ttype: Rc::new(Type {
-                        off: sec,
-                        is_dst: false,
-                        abbr: "".to_owned(),
-                    }),
-                }
-            ],
+            trans: vec![Transition {
+                            utc: std::i64::MIN,
+                            ttype: Rc::new(Type {
+                                off: sec,
+                                is_dst: false,
+                                abbr: "".to_owned(),
+                            }),
+                        }],
         }
     }
 
@@ -109,7 +107,15 @@ impl Timezone {
     /// - `minute` ∊ [0, 59]
     /// - `second` ∊ [0, 59]
     /// - `nano` ∊ [0, 999999999]
-    pub fn datetime(&self, year: i32, month: i32, day: i32, hour: i32, minute: i32, second: i32, nano: i32) -> Datetime {
+    pub fn datetime(&self,
+                    year: i32,
+                    month: i32,
+                    day: i32,
+                    hour: i32,
+                    minute: i32,
+                    second: i32,
+                    nano: i32)
+                    -> Datetime {
         let is_leap_year = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
 
         // Panics if constaints described in documentation do not hold.
@@ -303,30 +309,40 @@ impl<'a> Datetime<'a> {
         loop {
             match chars.next() {
                 None => break,
-                Some('%') => match chars.next() {
-                    None => panic!("Unfinished formatting after %"),
-                    Some('%') => out.push('%'),
-                    Some('Y') => write!(out, "{:04}", date.0).unwrap_or(()),
-                    Some('m') => write!(out, "{:02}", date.1).unwrap_or(()),
-                    Some('d') => write!(out, "{:02}", date.2).unwrap_or(()),
-                    Some('e') => write!(out, "{}", date.2).unwrap_or(()),
-                    Some('H') => write!(out, "{:02}", time.0).unwrap_or(()),
-                    Some('M') => write!(out, "{:02}", time.1).unwrap_or(()),
-                    Some('S') => write!(out, "{:02}", time.2).unwrap_or(()),
-                    Some('3') => write!(out, "{:03}", time.3 / 1_000_000).unwrap_or(()),
-                    Some('6') => write!(out, "{:06}", time.3 / 1_000).unwrap_or(()),
-                    Some('9') => write!(out, "{:09}", time.3).unwrap_or(()),
-                    Some('x') => write!(out, "{:+03}:{:02}", off.off/3600, off.off%3600/60).unwrap_or(()),
-                    Some('z') => write!(out, "{:+03}{:02}", off.off/3600, off.off%3600/60).unwrap_or(()),
-                    Some('Z') => write!(out, "{}", off.abbr).unwrap_or(()),
-                    Some('w') => write!(out, "{}", tm.tm_wday).unwrap_or(()),
-                    Some('a') => write!(out, "{}", &Self::tm_to_weekday(&tm)[..3]).unwrap_or(()),
-                    Some('A') => write!(out, "{}", Self::tm_to_weekday(&tm)).unwrap_or(()),
-                    Some('b') => write!(out, "{}", &Self::tm_to_month(&tm)[..3]).unwrap_or(()),
-                    Some('B') => write!(out, "{}", Self::tm_to_month(&tm)).unwrap_or(()),
-                    Some('C') => write!(out, "{}", date.0 / 100).unwrap_or(()),
-                    Some(c) => panic!("unknown format control %{}", c),
-                },
+                Some('%') => {
+                    match chars.next() {
+                        None => panic!("Unfinished formatting after %"),
+                        Some('%') => out.push('%'),
+                        Some('Y') => write!(out, "{:04}", date.0).unwrap_or(()),
+                        Some('m') => write!(out, "{:02}", date.1).unwrap_or(()),
+                        Some('d') => write!(out, "{:02}", date.2).unwrap_or(()),
+                        Some('e') => write!(out, "{}", date.2).unwrap_or(()),
+                        Some('H') => write!(out, "{:02}", time.0).unwrap_or(()),
+                        Some('M') => write!(out, "{:02}", time.1).unwrap_or(()),
+                        Some('S') => write!(out, "{:02}", time.2).unwrap_or(()),
+                        Some('3') => write!(out, "{:03}", time.3 / 1_000_000).unwrap_or(()),
+                        Some('6') => write!(out, "{:06}", time.3 / 1_000).unwrap_or(()),
+                        Some('9') => write!(out, "{:09}", time.3).unwrap_or(()),
+                        Some('x') => {
+                            write!(out, "{:+03}:{:02}", off.off / 3600, off.off % 3600 / 60)
+                                .unwrap_or(())
+                        }
+                        Some('z') => {
+                            write!(out, "{:+03}{:02}", off.off / 3600, off.off % 3600 / 60)
+                                .unwrap_or(())
+                        }
+                        Some('Z') => write!(out, "{}", off.abbr).unwrap_or(()),
+                        Some('w') => write!(out, "{}", tm.tm_wday).unwrap_or(()),
+                        Some('a') => {
+                            write!(out, "{}", &Self::tm_to_weekday(&tm)[..3]).unwrap_or(())
+                        }
+                        Some('A') => write!(out, "{}", Self::tm_to_weekday(&tm)).unwrap_or(()),
+                        Some('b') => write!(out, "{}", &Self::tm_to_month(&tm)[..3]).unwrap_or(()),
+                        Some('B') => write!(out, "{}", Self::tm_to_month(&tm)).unwrap_or(()),
+                        Some('C') => write!(out, "{}", date.0 / 100).unwrap_or(()),
+                        Some(c) => panic!("unknown format control %{}", c),
+                    }
+                }
                 Some(c) => out.push(c),
             }
         }
@@ -384,11 +400,9 @@ mod test {
     #[test]
     fn test_datetime() {
         let utc = Timezone::utc();
-        for &((y, m, d, h, mi, s, n), stamp) in &[
-            ((1970, 1, 1, 0, 0, 0, 0), 0),
-            ((1970, 1, 1, 1, 0, 0, 0), 3600),
-            ((2016, 1, 1, 0, 0, 0, 0), 1451606400),
-        ] {
+        for &((y, m, d, h, mi, s, n), stamp) in &[((1970, 1, 1, 0, 0, 0, 0), 0),
+                                                  ((1970, 1, 1, 1, 0, 0, 0), 3600),
+                                                  ((2016, 1, 1, 0, 0, 0, 0), 1451606400)] {
             let stamp = time::Timespec {
                 sec: stamp,
                 nsec: 0,
