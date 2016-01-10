@@ -48,6 +48,12 @@ impl Timezone {
         parse::load_timezone(timezone)
     }
 
+    /// Load the local `Timezone` set by the system,
+    /// disregarding the `TZ` environment variable.
+    pub fn local() -> io::Result<Self> {
+        parse::load_timezone("localtime")
+    }
+
     /// Project a `Tm` from UTC into the `Timezone`.
     /// Panics if not in UTC timezone.
     pub fn localize(&self, t: time::Tm) -> time::Tm {
