@@ -145,7 +145,6 @@ impl Timezone {
         let utc_offset = self.offset(stamp.sec);
         stamp.sec -= utc_offset as i64;
 
-        println!("stamp: {}", stamp.sec);
         Datetime {
             tz: self,
             stamp: stamp,
@@ -202,7 +201,6 @@ impl<'a> Datetime<'a> {
             nsec: self.stamp.nsec,
         };
         let mut tm = time::at_utc(local);
-        println!("on {:#?}, offset for {} = {}", tm, self.tz.name, offset);
         tm.tm_utcoff = offset;
         tm
     }
