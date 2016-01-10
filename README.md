@@ -24,10 +24,12 @@ extern crate tzdata;
 The library provides basic support for timezone conversion.
 
 ```rust
-let now = now_utc();
+let utc = tzdata::Timezone::utc();
+let now = utc.now();
+
 for tzname in &["Europe/Paris", "America/New_York", "Asia/Seoul"] {
-    let tz = Timezone::new(tzname).unwrap();
-    let now = tz.localize(now);
-    println!("now is {} in {}", now.rfc3339(), tz.name);
+    let tz = tzdata::Timezone::new(tzname).unwrap();
+    let now = now.project(&tz);
+    println!("it is now {:?} in {}", now, tz.name);
 }
 ```
