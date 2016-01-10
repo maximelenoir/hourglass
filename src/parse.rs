@@ -32,7 +32,7 @@ pub fn load_timezone(timezone: &str) -> io::Result<Timezone> {
     let types: Vec<Rc<Type>> = types.iter()
                                     .map(|&(off, is_dst, abbr_idx)| {
                                         Rc::new(Type {
-                                            utc_off_sec: off,
+                                            off: off,
                                             is_dst: is_dst,
                                             abbr: abbrs.iter()
                                                        .find(|&&(idx, _)| idx == abbr_idx)

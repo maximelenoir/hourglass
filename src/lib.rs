@@ -38,7 +38,7 @@ struct Transition {
 
 #[derive(Debug)]
 struct Type {
-    utc_off_sec: i32,
+    off: i32,
     is_dst: bool,
     abbr: String,
 }
@@ -71,7 +71,7 @@ impl Timezone {
                 Transition {
                     utc: std::i64::MIN,
                     ttype: Rc::new(Type {
-                        utc_off_sec: sec,
+                        off: sec,
                         is_dst: false,
                         abbr: "".to_owned(),
                     }),
@@ -81,14 +81,14 @@ impl Timezone {
     }
 
     /// Compute the UTC offset in this `Timezone` for unix timestamp `t`.
-    fn offset(&self, stamp: i64) -> i32 {
+    fn offset(&self, stamp: i64) -> &Type {
         let idx = match self.trans.binary_search_by(|t| t.utc.cmp(&stamp)) {
-            Err(0) => return 0, // FIXME?
+            Err(0) => unreachable!(),
             Err(i) => i - 1,
             Ok(i) => i,
         };
 
-        self.trans[idx].ttype.utc_off_sec
+        &self.trans[idx].ttype
     }
 
     /// Return the `Datetime` representing now, relative to this `Timezone`.
@@ -142,7 +142,7 @@ impl Timezone {
             tm_nsec: nano as i32,
         };
         let mut stamp = utc_dt.to_timespec();
-        let utc_offset = self.offset(stamp.sec);
+        let utc_offset = self.offset(stamp.sec).off;
         stamp.sec -= utc_offset as i64;
 
         Datetime {
@@ -195,7 +195,7 @@ impl<'a> Datetime<'a> {
 
     /// Return the tm in the associated `Timezone`.
     fn tm(&self) -> time::Tm {
-        let offset = self.tz.offset(self.stamp.sec);
+        let offset = self.tz.offset(self.stamp.sec).off;
         let local = time::Timespec {
             sec: self.stamp.sec + offset as i64,
             nsec: self.stamp.nsec,
@@ -205,12 +205,55 @@ impl<'a> Datetime<'a> {
         tm
     }
 
+    /// Convert a tm to date.
+    fn tm_to_date(tm: &time::Tm) -> (i32, i32, i32) {
+        (tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday)
+    }
+
+    /// Convert a tm to time.
+    fn tm_to_time(tm: &time::Tm) -> (i32, i32, i32, i32) {
+        (tm.tm_hour, tm.tm_min, tm.tm_sec, tm.tm_nsec)
+    }
+
+    /// Convert a tm to weekday string.
+    fn tm_to_weekday(tm: &time::Tm) -> &'static str {
+        match tm.tm_wday {
+            0 => "Sunday",
+            1 => "Monday",
+            2 => "Tuesday",
+            3 => "Wednesday",
+            4 => "Thursday",
+            5 => "Friday",
+            6 => "Saturday",
+            _ => unreachable!(),
+        }
+    }
+
+    /// Convert a tm to a month string.
+    fn tm_to_month(tm: &time::Tm) -> &'static str {
+        match tm.tm_mon {
+            0 => "January",
+            1 => "February",
+            2 => "March",
+            3 => "April",
+            4 => "May",
+            5 => "June",
+            6 => "July",
+            7 => "August",
+            8 => "September",
+            9 => "October",
+            10 => "November",
+            11 => "December",
+            _ => unreachable!(),
+        }
+    }
+
     /// Return the date component of the `Datetime` expressed
     /// in the associated `Timezone`. The tuple holds the
     /// year, month and day in this order.
     pub fn date(&self) -> (i32, i32, i32) {
         let tm = self.tm();
-        (tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday)
+        Self::tm_to_date(&tm)
     }
 
     /// Return the time component of the `Datetime` expressed
@@ -218,7 +261,87 @@ impl<'a> Datetime<'a> {
     /// the hour, minute, second and nanosecond in this order.
     pub fn time(&self) -> (i32, i32, i32, i32) {
         let tm = self.tm();
-        (tm.tm_hour, tm.tm_min, tm.tm_sec, tm.tm_nsec)
+        Self::tm_to_time(&tm)
+    }
+
+    /// Format the `Datetime` according to the provided `format`.
+    /// The following control characters are implemented:
+    ///
+    /// - `%%`: the '%' character
+    /// - `%Y`: year (2006)
+    /// - `%m`: month (01)
+    /// - `%d`: day of the month (02)
+    /// - `%e`: day of the month (2)
+    /// - `%H`: hour (15)
+    /// - `%M`: minute (04)
+    /// - `%S`: second (05)
+    /// - `%3`: millisecond (123)
+    /// - `%6`: microsecond (123456)
+    /// - `%9`: nanosecond (123456789)
+    /// - `%x`: UTC offset (+02:00 or -05:00)
+    /// - `%z`: UTC offset (+0200 or -0500)
+    /// - `%Z`: timezone abbreviation (CET)
+    /// - `%w`: weekday (1)
+    /// - `%a`: abbreviated weekday name (Mon)
+    /// - `%A`: full weekday name (Monday)
+    /// - `%b`: abbreviated month name (Jan)
+    /// - `%B`: full month name (January)
+    /// - `%C`: century (20)
+    ///
+    /// Panics if the format is invalid.
+    pub fn format(&self, fmt: &str) -> String {
+        use std::fmt::Write;
+
+        let mut out = String::with_capacity(2 * fmt.len());
+
+        let tm = self.tm();
+        let date = Self::tm_to_date(&tm);
+        let time = Self::tm_to_time(&tm);
+        let off = self.tz.offset(self.stamp.sec);
+
+        let mut chars = fmt.chars();
+        loop {
+            match chars.next() {
+                None => break,
+                Some('%') => match chars.next() {
+                    None => panic!("Unfinished formatting after %"),
+                    Some('%') => out.push('%'),
+                    Some('Y') => write!(out, "{:04}", date.0).unwrap_or(()),
+                    Some('m') => write!(out, "{:02}", date.1).unwrap_or(()),
+                    Some('d') => write!(out, "{:02}", date.2).unwrap_or(()),
+                    Some('e') => write!(out, "{}", date.2).unwrap_or(()),
+                    Some('H') => write!(out, "{:02}", time.0).unwrap_or(()),
+                    Some('M') => write!(out, "{:02}", time.1).unwrap_or(()),
+                    Some('S') => write!(out, "{:02}", time.2).unwrap_or(()),
+                    Some('3') => write!(out, "{:03}", time.3 / 1_000_000).unwrap_or(()),
+                    Some('6') => write!(out, "{:06}", time.3 / 1_000).unwrap_or(()),
+                    Some('9') => write!(out, "{:09}", time.3).unwrap_or(()),
+                    Some('x') => write!(out, "{:+03}:{:02}", off.off/3600, off.off%3600/60).unwrap_or(()),
+                    Some('z') => write!(out, "{:+03}{:02}", off.off/3600, off.off%3600/60).unwrap_or(()),
+                    Some('Z') => write!(out, "{}", off.abbr).unwrap_or(()),
+                    Some('w') => write!(out, "{}", tm.tm_wday).unwrap_or(()),
+                    Some('a') => write!(out, "{}", &Self::tm_to_weekday(&tm)[..3]).unwrap_or(()),
+                    Some('A') => write!(out, "{}", Self::tm_to_weekday(&tm)).unwrap_or(()),
+                    Some('b') => write!(out, "{}", &Self::tm_to_month(&tm)[..3]).unwrap_or(()),
+                    Some('B') => write!(out, "{}", Self::tm_to_month(&tm)).unwrap_or(()),
+                    Some('C') => write!(out, "{}", date.0 / 100).unwrap_or(()),
+                    Some(c) => panic!("unknown format control %{}", c),
+                },
+                Some(c) => out.push(c),
+            }
+        }
+
+        out
+    }
+
+    /// Format `Datetime` according to RFC 3339 format.
+    pub fn rfc3339(&self) -> String {
+        self.format("%Y-%m-%dT%H:%M:%S%x")
+    }
+
+    /// Format `Datetime` according to RFC 2822 format.
+    pub fn rfc2822(&self) -> String {
+        self.format("%a, %e %b %Y %H:%M:%S %z")
     }
 }
 
@@ -294,5 +417,26 @@ mod test {
         assert_eq!(t_ny, t);
         assert_eq!(t_ny.date(), (2016, 1, 15));
         assert_eq!(t_ny.time(), (15, 0, 0, 0));
+    }
+
+    #[test]
+    fn test_format() {
+        let paris = Timezone::new("Europe/Paris").unwrap();
+        let t = paris.datetime(2006, 1, 2, 15, 4, 5, 123_456_789);
+
+        assert_eq!(t.format("%Y-%m-%dT%H:%M:%S"), "2006-01-02T15:04:05");
+        assert_eq!(t.format("%3"), "123");
+        assert_eq!(t.format("%6"), "123456");
+        assert_eq!(t.format("%9"), "123456789");
+        assert_eq!(t.format("%z"), "+0100");
+        assert_eq!(t.format("%Z"), "CET");
+        assert_eq!(t.format("%w"), "1");
+        assert_eq!(t.format("%a"), "Mon");
+        assert_eq!(t.format("%A"), "Monday");
+        assert_eq!(t.format("%b"), "Jan");
+        assert_eq!(t.format("%B"), "January");
+        assert_eq!(t.format("%C"), "20");
+        assert_eq!(t.rfc3339(), "2006-01-02T15:04:05+01:00");
+        assert_eq!(t.rfc2822(), "Mon, 2 Jan 2006 15:04:05 +0100");
     }
 }
