@@ -24,6 +24,7 @@ use std::io;
 pub struct Timezone {
     /// The timezone name e.g. `Europe/Paris`.
     pub name: String,
+    /// The UTC offset transitions
     trans: Vec<Transition>,
 }
 
@@ -52,6 +53,29 @@ impl Timezone {
     /// disregarding the `TZ` environment variable.
     pub fn local() -> io::Result<Self> {
         parse::load_timezone("localtime")
+    }
+
+    /// Returns the `UTC` timezone.
+    pub fn utc() -> Self {
+        Self::fixed(0)
+    }
+
+    /// Returns a fixed offset to `UTC` timezone.
+    /// The provided offset is in seconds.
+    pub fn fixed(sec: i32) -> Self {
+        Timezone {
+            name: "UTC".to_owned(),
+            trans: vec![
+                Transition {
+                    utc: std::i64::MIN,
+                    ttype: Rc::new(Type {
+                        utc_off_sec: sec,
+                        is_dst: false,
+                        abbr: "".to_owned(),
+                    }),
+                }
+            ],
+        }
     }
 
     /// Project a `Tm` from UTC into the `Timezone`.
