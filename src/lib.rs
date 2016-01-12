@@ -98,6 +98,22 @@ impl Timezone {
         }
     }
 
+    /// Parse a `Datetime` relative to this `Timezone` according
+    /// to the given format. Timezone-related field are ignored.
+    /// Panics if the string does not match the format.
+    pub fn parse(&self, s: &str, fmt: &str) -> Datetime {
+        let tm = time::strptime(s, fmt).unwrap();
+         self.datetime(
+            tm.tm_year + 1900,
+            tm.tm_mon + 1,
+            tm.tm_mday,
+            tm.tm_hour,
+            tm.tm_min,
+            tm.tm_sec,
+            tm.tm_nsec,
+        )
+    }
+
     /// Create a new `Datetime` relative to this `Timezone`.
     /// Panics if the following constraints do not hold:
     ///
@@ -452,5 +468,16 @@ mod test {
         assert_eq!(t.format("%C"), "20");
         assert_eq!(t.rfc3339(), "2006-01-02T15:04:05+01:00");
         assert_eq!(t.rfc2822(), "Mon, 2 Jan 2006 15:04:05 +0100");
+    }
+
+    #[test]
+    fn test_parse() {
+        let paris = Timezone::new("Europe/Paris").unwrap();
+        let utc = Timezone::utc();
+
+        let t = paris.parse("2006-01-02T15:04:05", "%Y-%m-%dT%H:%M:%S");
+        let t_utc = t.project(&utc);
+        assert_eq!(t_utc.date(), (2006, 1, 2));
+        assert_eq!(t_utc.time(), (14, 4, 5, 0));
     }
 }
