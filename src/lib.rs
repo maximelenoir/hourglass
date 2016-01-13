@@ -81,7 +81,7 @@ impl Timezone {
     /// Compute the UTC offset in this `Timezone` for unix timestamp `t`.
     fn offset(&self, stamp: i64) -> &Type {
         let idx = match self.trans.binary_search_by(|t| t.utc.cmp(&stamp)) {
-            Err(0) => unreachable!(),
+            Err(0) => 0,
             Err(i) => i - 1,
             Ok(i) => i,
         };
