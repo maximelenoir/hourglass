@@ -286,6 +286,12 @@ impl<'a> Datetime<'a> {
         Self::tm_to_time(&tm)
     }
 
+    /// Return the unix timestamp. This is the number of unix seconds
+    /// since 1970-01-01T00:00:00Z.
+    pub fn unix(&self) -> i64 {
+        self.stamp.sec
+    }
+
     /// Format the `Datetime` according to the provided `format`.
     /// The following control characters are implemented:
     ///
