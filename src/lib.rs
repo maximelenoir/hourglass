@@ -28,6 +28,8 @@ pub struct Timezone {
     pub name: String,
     /// The UTC offset transitions
     trans: Vec<Transition>,
+    /// The extra transition rule
+    trule: Option<TransRule>,
 }
 
 #[derive(Debug)]
@@ -37,6 +39,34 @@ struct Transition {
 }
 
 #[derive(Debug)]
+enum TransRule {
+    Fixed(Type),
+    Alternate {
+        dst_start: GenericDay,
+        dst_stime: i32,
+        dst_end: GenericDay,
+        dst_etime: i32,
+        std: Type,
+        dst: Type,
+    },
+}
+
+#[derive(Debug)]
+enum GenericDay {
+    Julian0 {
+        jday: i32,
+    },
+    Julian1 {
+        jday: i32,
+    },
+    MWDRule {
+        month: i32,
+        week: i32,
+        wday: i32,
+    },
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct Type {
     off: i32,
     is_dst: bool,
@@ -75,18 +105,29 @@ impl Timezone {
                                 abbr: "".to_owned(),
                             }),
                         }],
+            trule: None,
         }
     }
 
     /// Compute the UTC offset in this `Timezone` for unix timestamp `t`.
     fn offset(&self, stamp: i64) -> &Type {
         let idx = match self.trans.binary_search_by(|t| t.utc.cmp(&stamp)) {
+            Err(i) if i == self.trans.len() => return self.offset_trule(stamp),
             Err(0) => 0,
             Err(i) => i - 1,
             Ok(i) => i,
         };
 
         &self.trans[idx].ttype
+    }
+
+    /// Compute the UTC offset in this `Timezone` for unix timestamp `t`
+    /// using the transition rule.
+    fn offset_trule(&self, stamp: i64) -> &Type {
+        match self.trule {
+            None => &self.trans.last().unwrap().ttype,
+            Some(ref rule) => rule.get_type(stamp),
+        }
     }
 
     /// Return the `Datetime` representing now, relative to this `Timezone`.
@@ -103,15 +144,13 @@ impl Timezone {
     /// Panics if the string does not match the format.
     pub fn parse(&self, s: &str, fmt: &str) -> Datetime {
         let tm = time::strptime(s, fmt).unwrap();
-         self.datetime(
-            tm.tm_year + 1900,
-            tm.tm_mon + 1,
-            tm.tm_mday,
-            tm.tm_hour,
-            tm.tm_min,
-            tm.tm_sec,
-            tm.tm_nsec,
-        )
+        self.datetime(tm.tm_year + 1900,
+                      tm.tm_mon + 1,
+                      tm.tm_mday,
+                      tm.tm_hour,
+                      tm.tm_min,
+                      tm.tm_sec,
+                      tm.tm_nsec)
     }
 
     /// Create a new `Datetime` relative to this `Timezone`.
@@ -171,6 +210,137 @@ impl Timezone {
             tz: self,
             stamp: stamp,
             is_60th_sec: false, // Always false because of ambiguity
+        }
+    }
+}
+
+impl GenericDay {
+    fn cmp_t(&self, tm: &time::Tm) -> Ordering {
+        const DAYS_MONTH: &'static [i32] = &[0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+        let is_leap_year = (tm.tm_year % 4 == 0 && tm.tm_year % 100 != 0) || tm.tm_year % 400 == 0;
+
+        match *self {
+            GenericDay::Julian0 { jday } => jday.cmp(&tm.tm_yday),
+            GenericDay::Julian1 { jday } => {
+                let yday = if is_leap_year && tm.tm_mon > 2 {
+                    tm.tm_yday
+                } else {
+                    tm.tm_yday + 1
+                };
+                jday.cmp(&yday)
+            }
+            GenericDay::MWDRule { month, week, wday } => {
+                if month < tm.tm_mon {
+                    Ordering::Less
+                } else if month > tm.tm_mon {
+                    Ordering::Greater
+                } else {
+                    let wday_on_first = (tm.tm_wday - tm.tm_mday + 1 + 5 * 7) % 7;
+                    let days_in_month = if is_leap_year && tm.tm_mon == 2 {
+                        29
+                    } else {
+                        DAYS_MONTH[tm.tm_mon as usize]
+                    };
+
+                    let mut matching_week = 0;
+                    let mut last_matching_day = 0;
+                    for d in 0..days_in_month {
+                        if (wday_on_first + d) % 7 == wday {
+                            last_matching_day = d;
+                            matching_week += 1;
+                        }
+                        if matching_week == week {
+                            break;
+                        }
+                    }
+                    (last_matching_day + 1).cmp(&tm.tm_mday)
+                }
+            }
+        }
+    }
+
+    fn approx_month(&self) -> i32 {
+        match *self {
+            GenericDay::Julian0 { jday } => jday / 30,
+            GenericDay::Julian1 { jday } => jday / 30,
+            GenericDay::MWDRule { month, .. } => month,
+        }
+    }
+
+    fn cmp(&self, other: &GenericDay) -> Ordering {
+        // I make the assumption that the dst
+        // start and end are more than 1 month apart.
+        self.approx_month().cmp(&other.approx_month())
+    }
+}
+
+impl PartialEq<time::Tm> for GenericDay {
+    fn eq(&self, tm: &time::Tm) -> bool {
+        self.cmp_t(tm) == Ordering::Equal
+    }
+}
+
+impl PartialOrd<time::Tm> for GenericDay {
+    fn partial_cmp(&self, tm: &time::Tm) -> Option<Ordering> {
+        Some(self.cmp_t(tm))
+    }
+}
+
+impl PartialEq<GenericDay> for GenericDay {
+    fn eq(&self, other: &GenericDay) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl PartialOrd<GenericDay> for GenericDay {
+    fn partial_cmp(&self, other: &GenericDay) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl TransRule {
+    fn get_type(&self, stamp: i64) -> &Type {
+        match *self {
+            TransRule::Fixed(ref t) => t,
+            TransRule::Alternate { ref dst_start, dst_stime, ref dst_end, dst_etime, ref std, ref dst } => {
+                let mut std_t = time::at_utc(time::Timespec { sec: stamp + std.off as i64, nsec: 0 });
+                std_t.tm_year += 1900;
+                std_t.tm_mon += 1;
+                let std_sec = std_t.tm_hour * 3600 + std_t.tm_min * 60 + std_t.tm_sec;
+
+                // TODO: more efficient way to compute dst_t from std_t?
+                let mut dst_t = time::at_utc(time::Timespec { sec: stamp + dst.off as i64, nsec: 0 });
+                dst_t.tm_year += 1900;
+                dst_t.tm_mon += 1;
+                let dst_sec = dst_t.tm_hour * 3600 + dst_t.tm_min * 60 + dst_t.tm_sec;
+
+                if dst_start < dst_end {
+                    match (dst_start.cmp_t(&std_t), dst_stime.cmp(&std_sec)) {
+                        (Ordering::Greater, _) => std,
+                        (Ordering::Equal, Ordering::Greater) => std,
+                        (Ordering::Equal, _) => dst,
+                        (_, _) => match (dst_end.cmp_t(&dst_t), dst_etime.cmp(&dst_sec)) {
+                            (Ordering::Greater, _) => dst,
+                            (Ordering::Equal, Ordering::Greater) => dst,
+                            (Ordering::Equal, _) => std,
+                            (_, _) => std,
+                        },
+                    }
+                } else {
+                    match (dst_end.cmp_t(&dst_t), dst_etime.cmp(&dst_sec)) {
+                        (Ordering::Greater, _) => dst,
+                        (Ordering::Equal, Ordering::Greater) => dst,
+                        (Ordering::Equal, _) => std,
+                        (_, _) => match (dst_start.cmp_t(&std_t), dst_stime.cmp(&std_sec)) {
+                            (Ordering::Greater, _) => std,
+                            (Ordering::Equal, Ordering::Greater) => std,
+                            (Ordering::Equal, _) => dst,
+                            (_, _) => dst,
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -418,6 +588,7 @@ impl<'a> fmt::Debug for Datetime<'a> {
 mod test {
     use super::*;
     use super::time;
+    use super::{GenericDay, Type, TransRule};
 
     #[test]
     fn test_datetime() {
@@ -485,5 +656,220 @@ mod test {
         let t_utc = t.project(&utc);
         assert_eq!(t_utc.date(), (2006, 1, 2));
         assert_eq!(t_utc.time(), (14, 4, 5, 0));
+    }
+
+    #[test]
+    fn test_generic_day() {
+        fn t(y: i32, m: i32, d: i32) -> time::Tm {
+            let tm = time::Tm {
+                tm_sec: 0,
+                tm_min: 0,
+                tm_hour: 0,
+                tm_mday: d,
+                tm_mon: m - 1,
+                tm_year: y - 1900,
+                tm_wday: 0,
+                tm_yday: 0,
+                tm_isdst: 0,
+                tm_utcoff: 0,
+                tm_nsec: 0,
+            };
+            // Trick to let time lib compute tm_wday.
+            let t = tm.to_timespec();
+            let mut tm = time::at_utc(t);
+            tm.tm_year += 1900;
+            tm.tm_mon += 1;
+            tm
+        }
+
+        assert_eq!(GenericDay::Julian1 { jday: 59 }, t(2016, 2, 28));
+        assert_eq!(GenericDay::Julian1 { jday: 60 }, t(2016, 3, 1));
+        assert_eq!(GenericDay::Julian1 { jday: 365 }, t(2016, 12, 31));
+        assert_eq!(GenericDay::Julian1 { jday: 59 }, t(2015, 2, 28));
+        assert_eq!(GenericDay::Julian1 { jday: 60 }, t(2015, 3, 1));
+        assert_eq!(GenericDay::Julian1 { jday: 365 }, t(2015, 12, 31));
+
+        assert_eq!(GenericDay::Julian0 { jday: 58 }, t(2016, 2, 28));
+        assert_eq!(GenericDay::Julian0 { jday: 59 }, t(2016, 2, 29));
+        assert_eq!(GenericDay::Julian0 { jday: 60 }, t(2016, 3, 1));
+        assert_eq!(GenericDay::Julian0 { jday: 365 }, t(2016, 12, 31));
+        assert_eq!(GenericDay::Julian0 { jday: 58 }, t(2015, 2, 28));
+        assert_eq!(GenericDay::Julian0 { jday: 59 }, t(2015, 3, 1));
+        assert_eq!(GenericDay::Julian0 { jday: 364 }, t(2015, 12, 31));
+
+        assert_eq!(GenericDay::MWDRule {
+                       month: 1,
+                       week: 1,
+                       wday: 0,
+                   },
+                   t(2016, 1, 3));
+        assert_eq!(GenericDay::MWDRule {
+                       month: 1,
+                       week: 2,
+                       wday: 0,
+                   },
+                   t(2016, 1, 10));
+        assert_eq!(GenericDay::MWDRule {
+                       month: 1,
+                       week: 5,
+                       wday: 0,
+                   },
+                   t(2016, 1, 31));
+        assert_eq!(GenericDay::MWDRule {
+                       month: 1,
+                       week: 1,
+                       wday: 5,
+                   },
+                   t(2016, 1, 1));
+        assert_eq!(GenericDay::MWDRule {
+                       month: 1,
+                       week: 5,
+                       wday: 4,
+                   },
+                   t(2016, 1, 28));
+        assert_eq!(GenericDay::MWDRule {
+                       month: 1,
+                       week: 4,
+                       wday: 4,
+                   },
+                   t(2016, 1, 28));
+    }
+
+    #[test]
+    fn test_trans_rule() {
+        fn s(y: i32, mo: i32, d: i32, h: i32, m: i32, s: i32) -> i64 {
+            let tm = time::Tm {
+                tm_sec: s,
+                tm_min: m,
+                tm_hour: h,
+                tm_mday: d,
+                tm_mon: mo - 1,
+                tm_year: y - 1900,
+                tm_wday: 0,
+                tm_yday: 0,
+                tm_isdst: 0,
+                tm_utcoff: 0,
+                tm_nsec: 0,
+            };
+            tm.to_timespec().sec
+        }
+
+        // Fixed offset rule. easy.
+        let kst = Type {
+            off: 9 * 3600,
+            is_dst: false,
+            abbr: "KST".to_owned(),
+        };
+        let seoul_rule = TransRule::Fixed(kst.clone());
+        assert_eq!(seoul_rule.get_type(s(2016, 1, 1, 0, 0, 0)), &kst);
+        assert_eq!(seoul_rule.get_type(s(2016, 7, 1, 0, 0, 0)), &kst);
+        assert_eq!(seoul_rule.get_type(s(2016, 10, 1, 0, 0, 0)), &kst);
+
+        // Alternate offset rule.
+        // CET-1CEST,M3.5.0,M10.5.0/3
+        let cet = Type {
+            off: 1 * 3600,
+            is_dst: false,
+            abbr: "CET".to_owned(),
+        };
+        let cest = Type {
+            off: 2 * 3600,
+            is_dst: true,
+            abbr: "CEST".to_owned(),
+        };
+        let paris_rule = TransRule::Alternate {
+            dst_start: GenericDay::MWDRule {
+                month: 3,
+                week: 5,
+                wday: 0,
+            },
+            dst_stime: 2 * 3600, // From std to dst at 2AM std tz
+            dst_end: GenericDay::MWDRule {
+                month: 10,
+                week: 5,
+                wday: 0,
+            },
+            dst_etime: 3 * 3600, // From dst to std at 3AM dst tz!
+            std: cet.clone(),
+            dst: cest.clone(),
+        };
+        assert_eq!(paris_rule.get_type(s(2016, 1, 1, 0, 0, 0)), &cet);
+        assert_eq!(paris_rule.get_type(s(2016, 3, 27, 0, 59, 59)), &cet);
+        assert_eq!(paris_rule.get_type(s(2016, 3, 27, 1, 0, 0)), &cest);
+        assert_eq!(paris_rule.get_type(s(2016, 10, 30, 0, 59, 59)), &cest);
+        assert_eq!(paris_rule.get_type(s(2016, 10, 30, 1, 0, 0)), &cet);
+        assert_eq!(paris_rule.get_type(s(2016, 12, 31, 0, 0, 0)), &cet);
+
+        // Alternate offset rule where dst is still
+        // in use at the end of the year and stops at
+        // the beginning of the year.
+        // AEST-10AEDT,M10.1.0,M4.1.0/3
+        let aest = Type {
+            off: 10 * 3600,
+            is_dst: false,
+            abbr: "AEST".to_owned(),
+        };
+        let aedt = Type {
+            off: 11 * 3600,
+            is_dst: true,
+            abbr: "AEDT".to_owned(),
+        };
+        let sydney_rule = TransRule::Alternate {
+            dst_start: GenericDay::MWDRule {
+                month: 10,
+                week: 1,
+                wday: 0,
+            },
+            dst_stime: 2 * 3600,
+            dst_end: GenericDay::MWDRule {
+                month: 4,
+                week: 1,
+                wday: 0,
+            },
+            dst_etime: 3 * 3600,
+            std: aest.clone(),
+            dst: aedt.clone(),
+        };
+        assert_eq!(sydney_rule.get_type(s(2016, 1, 1, 0, 0, 0)), &aedt);
+        assert_eq!(sydney_rule.get_type(s(2016, 4, 2, 15, 59, 59)), &aedt);
+        assert_eq!(sydney_rule.get_type(s(2016, 4, 2, 16, 0, 0)), &aest);
+        assert_eq!(sydney_rule.get_type(s(2016, 10, 1, 15, 59, 59)), &aest);
+        assert_eq!(sydney_rule.get_type(s(2016, 10, 1, 16, 0, 0)), &aedt);
+        assert_eq!(sydney_rule.get_type(s(2016, 12, 31, 0, 0, 0)), &aedt);
+
+        // Alternative offset with negative UTC offset
+        // EST5EDT,M3.2.0,M11.1.0
+        let est = Type {
+            off: -5 * 3600,
+            is_dst: false,
+            abbr: "EST".to_owned(),
+        };
+        let edt = Type {
+            off: -4 * 3600,
+            is_dst: true,
+            abbr: "EDT".to_owned(),
+        };
+        let newyork_rule = TransRule::Alternate {
+            dst_start: GenericDay::MWDRule {
+                month: 3,
+                week: 2,
+                wday: 0,
+            },
+            dst_stime: 2 * 3600,
+            dst_end: GenericDay::MWDRule {
+                month: 11,
+                week: 1,
+                wday: 0,
+            },
+            dst_etime: 2 * 3600,
+            std: est.clone(),
+            dst: edt.clone(),
+        };
+        assert_eq!(newyork_rule.get_type(s(2016, 1, 1, 0, 0, 0)), &est);
+        assert_eq!(newyork_rule.get_type(s(2016, 3, 13, 6, 59, 59)), &est);
+        assert_eq!(newyork_rule.get_type(s(2016, 3, 13, 7, 0, 0)), &edt);
+        assert_eq!(newyork_rule.get_type(s(2016, 11, 6, 5, 59, 59)), &edt);
+        assert_eq!(newyork_rule.get_type(s(2016, 11, 6, 6, 0, 0)), &est);
+        assert_eq!(newyork_rule.get_type(s(2016, 12, 31, 0, 0, 0)), &est);
     }
 }
