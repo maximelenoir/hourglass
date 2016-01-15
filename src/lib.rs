@@ -159,7 +159,7 @@ impl Timezone {
     /// - `day` ∊ [1, 31] and is valid within the month
     /// - `hour` ∊ [0, 23]
     /// - `minute` ∊ [0, 59]
-    /// - `second` ∊ [0, 59]
+    /// - `second` ∊ [0, 60]
     /// - `nano` ∊ [0, 999999999]
     pub fn datetime(&self,
                     year: i32,
@@ -176,7 +176,7 @@ impl Timezone {
         assert!(month >= 1 && month <= 12);
         assert!(hour <= 23);
         assert!(minute <= 59);
-        assert!(second <= 59); // TODO: handle leap second
+        assert!(second <= 60);
         assert!(nano <= 999_999_999);
         let max_day = match month {
             1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -189,7 +189,11 @@ impl Timezone {
 
         // Let the time crate do the heavy lifting.
         let utc_dt = time::Tm {
-            tm_sec: second as i32,
+            tm_sec: if second == 60 {
+                59
+            } else {
+                second as i32
+            },
             tm_min: minute as i32,
             tm_hour: hour as i32,
             tm_mday: day as i32,
@@ -208,7 +212,15 @@ impl Timezone {
         Datetime {
             tz: self,
             stamp: stamp,
-            is_60th_sec: false, // Always false because of ambiguity
+            is_60th_sec: if second == 60 && year >= 1972 {
+                if let Ok(_) = LEAP_SECONDS.binary_search(&stamp.sec) {
+                    true
+                } else {
+                    panic!("not a valid leap second");
+                }
+            } else {
+                false
+            },
         }
     }
 }
@@ -402,8 +414,16 @@ impl<'a> Datetime<'a> {
     }
 
     /// Convert a tm to time.
-    fn tm_to_time(tm: &time::Tm) -> (i32, i32, i32, i32) {
-        (tm.tm_hour, tm.tm_min, tm.tm_sec, tm.tm_nsec)
+    fn tm_to_time(tm: &time::Tm, is_60th_sec: bool) -> (i32, i32, i32, i32) {
+        (tm.tm_hour,
+         tm.tm_min,
+         tm.tm_sec +
+         if is_60th_sec {
+            1
+        } else {
+            0
+        },
+         tm.tm_nsec)
     }
 
     /// Convert a tm to weekday string.
@@ -452,7 +472,7 @@ impl<'a> Datetime<'a> {
     /// the hour, minute, second and nanosecond in this order.
     pub fn time(&self) -> (i32, i32, i32, i32) {
         let tm = self.tm();
-        Self::tm_to_time(&tm)
+        Self::tm_to_time(&tm, self.is_60th_sec)
     }
 
     /// Return the unix timestamp. This is the number of unix seconds
@@ -493,7 +513,7 @@ impl<'a> Datetime<'a> {
 
         let tm = self.tm();
         let date = Self::tm_to_date(&tm);
-        let time = Self::tm_to_time(&tm);
+        let time = Self::tm_to_time(&tm, self.is_60th_sec);
         let off = self.tz.offset(self.stamp.sec);
 
         let mut chars = fmt.chars();
@@ -554,7 +574,7 @@ impl<'a> Datetime<'a> {
 
 impl<'a> PartialEq<Datetime<'a>> for Datetime<'a> {
     fn eq(&self, other: &Datetime) -> bool {
-        self.stamp.eq(&other.stamp)
+        self.cmp(&other) == Ordering::Equal
     }
 }
 
@@ -583,6 +603,37 @@ impl<'a> fmt::Debug for Datetime<'a> {
     }
 }
 
+// FIXME: is reading /usr/share/zoneinfo/leap-seconds.list
+// a better way to store the leap information?
+const NTP_TO_UNIX: i64 = 2208988801;
+const LEAP_SECONDS: &'static [i64] = &[2272060800 - NTP_TO_UNIX,
+                                       2287785600 - NTP_TO_UNIX,
+                                       2303683200 - NTP_TO_UNIX,
+                                       2335219200 - NTP_TO_UNIX,
+                                       2366755200 - NTP_TO_UNIX,
+                                       2398291200 - NTP_TO_UNIX,
+                                       2429913600 - NTP_TO_UNIX,
+                                       2461449600 - NTP_TO_UNIX,
+                                       2492985600 - NTP_TO_UNIX,
+                                       2524521600 - NTP_TO_UNIX,
+                                       2571782400 - NTP_TO_UNIX,
+                                       2603318400 - NTP_TO_UNIX,
+                                       2634854400 - NTP_TO_UNIX,
+                                       2698012800 - NTP_TO_UNIX,
+                                       2776982400 - NTP_TO_UNIX,
+                                       2840140800 - NTP_TO_UNIX,
+                                       2871676800 - NTP_TO_UNIX,
+                                       2918937600 - NTP_TO_UNIX,
+                                       2950473600 - NTP_TO_UNIX,
+                                       2982009600 - NTP_TO_UNIX,
+                                       3029443200 - NTP_TO_UNIX,
+                                       3076704000 - NTP_TO_UNIX,
+                                       3124137600 - NTP_TO_UNIX,
+                                       3345062400 - NTP_TO_UNIX,
+                                       3439756800 - NTP_TO_UNIX,
+                                       3550089600 - NTP_TO_UNIX,
+                                       3644697600 - NTP_TO_UNIX];
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -603,6 +654,19 @@ mod test {
             assert_eq!(dt.stamp, stamp);
             assert_eq!(dt.is_60th_sec, false);
         }
+    }
+
+    #[test]
+    fn test_leap_second() {
+        let utc = Timezone::utc();
+        let t = utc.datetime(2015, 6, 30, 23, 59, 59, 0);
+        let t_leap = utc.datetime(2015, 6, 30, 23, 59, 60, 0);
+        assert_eq!(t.is_60th_sec, false);
+        assert_eq!(t_leap.is_60th_sec, true);
+        assert_eq!(t.stamp.sec, t_leap.stamp.sec);
+        assert_eq!(t_leap.format("%S"), "60");
+        assert_eq!(t_leap.time().2, 60);
+        assert!(t_leap != t);
     }
 
     #[test]
