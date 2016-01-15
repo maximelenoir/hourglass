@@ -3,7 +3,6 @@ extern crate time;
 
 mod parse;
 
-pub use time::*;
 use std::rc::Rc;
 use std::io;
 use std::fmt;
