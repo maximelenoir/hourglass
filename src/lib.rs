@@ -209,18 +209,30 @@ impl Timezone {
         let utc_offset = self.offset(stamp.sec).off;
         stamp.sec -= utc_offset as i64;
 
-        Datetime {
-            tz: self,
-            stamp: stamp,
-            is_60th_sec: if second == 60 && year >= 1972 {
-                if let Ok(_) = LEAP_SECONDS.binary_search(&stamp.sec) {
-                    true
-                } else {
-                    panic!("not a valid leap second");
-                }
-            } else {
-                false
-            },
+        if second == 60 && year >= 1972 {
+            if let Err(_) = LEAP_SECONDS.binary_search(&(stamp.sec+1)) {
+                panic!("not a valid leap second");
+            }
+            Datetime {
+                tz: self,
+                stamp: time::Timespec {
+                    // This is actually 00:00:00. I cheated
+                    // when making time crate compute the
+                    // Tm (I used 59 instead of 60 seconds)
+                    // because I'm not sure whether the leap
+                    // second is well supported when converting
+                    // to Timespec.
+                    sec: stamp.sec + 1,
+                    nsec: stamp.nsec,
+                },
+                is_60th_sec: true,
+            }
+        } else {
+            Datetime {
+                tz: self,
+                stamp: stamp,
+                is_60th_sec: false,
+            }
         }
     }
 }
@@ -400,11 +412,19 @@ impl<'a> Datetime<'a> {
     fn tm(&self) -> time::Tm {
         let offset = self.tz.offset(self.stamp.sec).off;
         let local = time::Timespec {
-            sec: self.stamp.sec + offset as i64,
+            sec: self.stamp.sec + offset as i64 +
+                 if self.is_60th_sec {
+                -1
+            } else {
+                0
+            },
             nsec: self.stamp.nsec,
         };
         let mut tm = time::at_utc(local);
         tm.tm_utcoff = offset;
+        if self.is_60th_sec {
+            tm.tm_sec = 60;
+        }
         tm
     }
 
@@ -414,16 +434,8 @@ impl<'a> Datetime<'a> {
     }
 
     /// Convert a tm to time.
-    fn tm_to_time(tm: &time::Tm, is_60th_sec: bool) -> (i32, i32, i32, i32) {
-        (tm.tm_hour,
-         tm.tm_min,
-         tm.tm_sec +
-         if is_60th_sec {
-            1
-        } else {
-            0
-        },
-         tm.tm_nsec)
+    fn tm_to_time(tm: &time::Tm) -> (i32, i32, i32, i32) {
+        (tm.tm_hour, tm.tm_min, tm.tm_sec, tm.tm_nsec)
     }
 
     /// Convert a tm to weekday string.
@@ -472,7 +484,7 @@ impl<'a> Datetime<'a> {
     /// the hour, minute, second and nanosecond in this order.
     pub fn time(&self) -> (i32, i32, i32, i32) {
         let tm = self.tm();
-        Self::tm_to_time(&tm, self.is_60th_sec)
+        Self::tm_to_time(&tm)
     }
 
     /// Return the unix timestamp. This is the number of unix seconds
@@ -513,7 +525,7 @@ impl<'a> Datetime<'a> {
 
         let tm = self.tm();
         let date = Self::tm_to_date(&tm);
-        let time = Self::tm_to_time(&tm, self.is_60th_sec);
+        let time = Self::tm_to_time(&tm);
         let off = self.tz.offset(self.stamp.sec);
 
         let mut chars = fmt.chars();
@@ -605,7 +617,7 @@ impl<'a> fmt::Debug for Datetime<'a> {
 
 // FIXME: is reading /usr/share/zoneinfo/leap-seconds.list
 // a better way to store the leap information?
-const NTP_TO_UNIX: i64 = 2208988801;
+const NTP_TO_UNIX: i64 = 2208988800;
 const LEAP_SECONDS: &'static [i64] = &[2272060800 - NTP_TO_UNIX,
                                        2287785600 - NTP_TO_UNIX,
                                        2303683200 - NTP_TO_UNIX,
@@ -663,9 +675,11 @@ mod test {
         let t_leap = utc.datetime(2015, 6, 30, 23, 59, 60, 0);
         assert_eq!(t.is_60th_sec, false);
         assert_eq!(t_leap.is_60th_sec, true);
-        assert_eq!(t.stamp.sec, t_leap.stamp.sec);
+        assert_eq!(t.stamp.sec + 1, t_leap.stamp.sec);
         assert_eq!(t_leap.format("%S"), "60");
-        assert_eq!(t_leap.time().2, 60);
+        assert_eq!(t_leap.date(), (2015, 6, 30));
+        assert_eq!(t_leap.time(), (23, 59, 60, 0));
+        assert_eq!(t_leap.unix(), 1435708800);
         assert!(t_leap != t);
     }
 
