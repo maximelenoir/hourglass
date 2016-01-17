@@ -152,6 +152,25 @@ impl Timezone {
                       tm.tm_nsec)
     }
 
+    /// Create a new `Datetime` from a Unix timestamp. The provided
+    /// timestamp represents Unix seconds from the Epoch, discarding any
+    /// leap seconds that may have happened in between. A Unix timestamp
+    /// is ambiguous on leap second insertion (e.g. `1435708800` is
+    /// equal to both `2015-06-30T23:59:60Z` and `2015-07-01T00:00:00Z`)
+    /// however, `unix` will always choose the non-leap second. Panics
+    /// if `nano` ∉ [0, 999999999].
+    pub fn unix(&self, stamp: i64, nano: i32) -> Datetime {
+        assert!(nano >= 0 && nano < 1_000_000_000);
+        Datetime {
+            tz: self,
+            stamp: time::Timespec {
+                sec: stamp,
+                nsec: nano,
+            },
+            is_60th_sec: false,
+        }
+    }
+
     /// Create a new `Datetime` relative to this `Timezone`.
     /// Panics if the following constraints do not hold:
     ///
