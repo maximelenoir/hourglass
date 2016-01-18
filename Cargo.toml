@@ -1,13 +1,13 @@
 [package]
-name = "tzdata"
-version = "0.4.0"
+name = "hourglass"
+version = "0.4.1"
 authors = ["Maxime Lenoir <lenoir.maxime0@gmail.com>"]
 
-description = "Timezone library"
-homepage = "https://github.com/maximelenoir/tzdata-rs"
-repository = "https://github.com/maximelenoir/tzdata-rs"
-documentation = "https://maximelenoir.github.io/tzdata-rs/tzdata"
-keywords = ["timezone", "time", "datetime"]
+description = "Timezone-aware datetime library and time-related subtleties"
+homepage = "https://github.com/maximelenoir/hourglass"
+repository = "https://github.com/maximelenoir/hourglass"
+documentation = "https://maximelenoir.github.io/hourglass/hourglass"
+keywords = ["timezone", "time", "datetime", "date", "leap"]
 license = "MIT"
 
 [dependencies]
