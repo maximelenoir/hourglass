@@ -405,6 +405,7 @@ impl TransRule {
 /// assert_eq!(t.date(), (2015, 12, 24));
 /// assert_eq!(t.time(), (23, 0, 0, 0));
 /// ```
+#[derive(Clone, Copy)]
 pub struct Datetime<'a> {
     /// The associated timezone.
     tz: &'a Timezone,
