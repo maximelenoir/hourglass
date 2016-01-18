@@ -1,9 +1,12 @@
-# tzdata-rs
+# hourglass
 
-Timezone library for the Rust programming language ([doc](https://maximelenoir.github.io/tzdata-rs/tzdata))
+Timezone-aware datetime library for the Rust programming language ([doc](https://maximelenoir.github.io/hourglass/hourglass))
 
-[![Build Status](https://travis-ci.org/maximelenoir/tzdata-rs.svg?branch=master)](https://travis-ci.org/maximelenoir/tzdata-rs)
-[![Crate Version](https://img.shields.io/crates/v/tzdata.svg)](https://crates.io/crates/tzdata)
+[![Build Status](https://travis-ci.org/maximelenoir/hourglass.svg?branch=master)](https://travis-ci.org/maximelenoir/hourglass)
+[![Crate Version](https://img.shields.io/crates/v/hourglass.svg)](https://crates.io/crates/hourglass)
+
+`hourglass` provides support for timezone, datetime arithmetic and take care
+of subtleties related to time handling, like leap seconds.
 
 ## Usage
 
@@ -11,25 +14,61 @@ Add the following in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-tzdata = "0.*"
+hourglass = "0.*"
 ```
 
 And put this in your crate root:
 
 ```rust
-extern crate tzdata;
+extern crate hourglass;
 ```
-## Example
 
-The library provides basic support for timezone conversion.
+## Overview
+
+Because a datetime without a timezone is ambiguous and error-prone, `hourglass`
+only exposes a `Datetime` that is timezone-aware. The creation of a `Timezone`
+is the entry point of the API. `hourglass` provides several way of creating
+a `Timezone`:
 
 ```rust
-let utc = tzdata::Timezone::utc();
-let now = utc.now();
+use hourglass::Timezone;
 
-for tzname in &["Europe/Paris", "America/New_York", "Asia/Seoul"] {
-    let tz = tzdata::Timezone::new(tzname).unwrap();
-    let now = now.project(&tz);
-    println!("it is now {:?} in {}", now, tz.name);
-}
+let utc = Timezone::utc();
+let local = Timezone::local().unwrap();
+let paris = Timezone::new("Europe/Paris").unwrap();
+let fixed = Timezone::fixed(-5 * 3600);
+```
+
+A `Datetime` is created for a specific timezone and can be projected in another
+timezone:
+
+```rust
+use hourglass::Timezone;
+
+let utc = Timezone::utc();
+let paris = Timezone::new("Europe/Paris").unwrap();
+
+// Create a `Datetime` corresponding to midnight in Paris timezone...
+let t = paris.datetime(2015, 12, 25, 0, 0, 0, 0);
+// ... and project it into UTC timezone.
+let t_utc = t.project(&utc);
+assert_eq!(t_utc.date(), (2015, 12, 24));
+assert_eq!(t_utc.time(), (23, 0, 0, 0));
+```
+
+`Datetime` arithmetic is performed with a `Deltatime`. Several granularities
+are available when handling `Deltatime` and will yield different results:
+
+```rust
+use hourglass::{Timezone, Deltatime};
+
+let utc = Timezone::utc();
+let t = utc.datetime(2015, 6, 30, 0, 0, 0, 0);
+let t_plus_1_day = t + Deltatime::days(1);
+let t_plus_86400_sec = t + Deltatime::seconds(86400);
+
+assert_eq!(t_plus_1_day.date(), (2015, 7, 1));
+// One leap second was inserted this day.
+assert_eq!(t_plus_86400_sec.date(), (2015, 6, 30));
+assert_eq!(t_plus_86400_sec.time(), (23, 59, 60, 0));
 ```

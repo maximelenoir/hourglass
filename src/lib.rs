@@ -1,4 +1,70 @@
-//! `tzdata` uses the IANA Time Zone Database to provide conversion between timezones.
+//! `hourglass` provides support for timezone, datetime arithmetic and take care
+//! of subtleties related to time handling, like leap seconds.
+//!
+//! ## Usage
+//!
+//! Add the following in your `Cargo.toml`:
+//!
+//! ```toml
+//! [dependencies]
+//! hourglass = "0.*"
+//! ```
+//!
+//! And put this in your crate root:
+//!
+//! ```rust
+//! extern crate hourglass;
+//! ```
+//!
+//! ## Overview
+//!
+//! Because a datetime without a timezone is ambiguous and error-prone, `hourglass`
+//! only exposes a `Datetime` that is timezone-aware. The creation of a `Timezone`
+//! is the entry point of the API. `hourglass` provides several way of creating
+//! a `Timezone`:
+//!
+//! ```rust
+//! use hourglass::Timezone;
+//!
+//! let utc = Timezone::utc();
+//! let local = Timezone::local().unwrap();
+//! let paris = Timezone::new("Europe/Paris").unwrap();
+//! let fixed = Timezone::fixed(-5 * 3600);
+//! ```
+//!
+//! A `Datetime` is created for a specific timezone and can be projected in another
+//! timezone:
+//!
+//! ```rust
+//! use hourglass::Timezone;
+//!
+//! let utc = Timezone::utc();
+//! let paris = Timezone::new("Europe/Paris").unwrap();
+//!
+//! // Create a `Datetime` corresponding to midnight in Paris timezone...
+//! let t = paris.datetime(2015, 12, 25, 0, 0, 0, 0);
+//! // ... and project it into UTC timezone.
+//! let t_utc = t.project(&utc);
+//! assert_eq!(t_utc.date(), (2015, 12, 24));
+//! assert_eq!(t_utc.time(), (23, 0, 0, 0));
+//! ```
+//!
+//! `Datetime` arithmetic is performed with a `Deltatime`. Several granularities
+//! are available when handling `Deltatime` and will yield different results:
+//!
+//! ```rust
+//! use hourglass::{Timezone, Deltatime};
+//!
+//! let utc = Timezone::utc();
+//! let t = utc.datetime(2015, 6, 30, 0, 0, 0, 0);
+//! let t_plus_1_day = t + Deltatime::days(1);
+//! let t_plus_86400_sec = t + Deltatime::seconds(86400);
+//!
+//! assert_eq!(t_plus_1_day.date(), (2015, 7, 1));
+//! // One leap second was inserted this day.
+//! assert_eq!(t_plus_86400_sec.date(), (2015, 6, 30));
+//! assert_eq!(t_plus_86400_sec.time(), (23, 59, 60, 0));
+//! ```
 extern crate time;
 
 mod parse;
@@ -9,16 +75,22 @@ use std::fmt;
 use std::cmp::{Eq, PartialEq, Ord, PartialOrd, Ordering};
 use std::ops::{Add, Sub};
 
-/// A named timezone from the [`IANA Time Zone Database`](https://www.iana.org/time-zones)
+/// A timezone.
+///
+/// There are several ways to create a new `Timezone`. It can be loaded from the
+/// [`IANA Time Zone Database`](https://www.iana.org/time-zones), following the `Area/Location`
+/// pattern (e.g. `Europe/Paris`) with `Timezone::new`. A `Timezone` can be created as a fixed offset from `UTC`
+/// with `Timezone::fixed` or `UTC` itself with `Timezone::utc`. Finally, the `Timezone` can match the
+/// system local timezone with `Timezone::local`.
 ///
 /// # Example
 ///
 /// ```rust
-/// let utc = tzdata::Timezone::utc();
+/// let utc = hourglass::Timezone::utc();
 /// let now = utc.now();
 ///
 /// for tzname in &["Europe/Paris", "America/New_York", "Asia/Seoul"] {
-///     let tz = tzdata::Timezone::new(tzname).unwrap();
+///     let tz = hourglass::Timezone::new(tzname).unwrap();
 ///     let now = now.project(&tz);
 ///     println!("it is now {:?} in {}", now, tz.name);
 /// }
@@ -26,7 +98,7 @@ use std::ops::{Add, Sub};
 pub struct Timezone {
     /// The timezone name e.g. `Europe/Paris`.
     pub name: String,
-    /// The UTC offset transitions
+    /// The `UTC` offset transitions
     trans: Vec<Transition>,
     /// The extra transition rule
     trule: Option<TransRule>,
@@ -109,7 +181,7 @@ impl Timezone {
         }
     }
 
-    /// Compute the UTC offset in this `Timezone` for unix timestamp `t`.
+    /// Compute the `UTC` offset in this `Timezone` for unix timestamp `t`.
     fn offset(&self, stamp: i64) -> &Type {
         let idx = match self.trans.binary_search_by(|t| t.utc.cmp(&stamp)) {
             Err(i) if i == self.trans.len() => return self.offset_trule(stamp),
@@ -121,7 +193,7 @@ impl Timezone {
         &self.trans[idx].ttype
     }
 
-    /// Compute the UTC offset in this `Timezone` for unix timestamp `t`
+    /// Compute the `UTC` offset in this `Timezone` for unix timestamp `t`
     /// using the transition rule.
     fn offset_trule(&self, stamp: i64) -> &Type {
         match self.trule {
@@ -391,15 +463,15 @@ impl TransRule {
 /// A precise point in time along associated to a `Timezone`.
 ///
 /// The `Datetime` cannot be created on its own as it depends on
-/// a `Timezone`. `tzdata` does not expose a naive flavor of Datetime.
+/// a `Timezone`. `hourglass` does not expose a naive flavor of Datetime.
 /// To build a `Datetime`, instanciate a `Timezone` first and call
 /// the desired method.
 ///
 /// ```rust
-/// let paris = tzdata::Timezone::new("Europe/Paris").unwrap();
+/// let paris = hourglass::Timezone::new("Europe/Paris").unwrap();
 /// let midnight_in_paris = paris.datetime(2015, 12, 25, 0, 0, 0, 0);
 ///
-/// let utc = tzdata::Timezone::utc();
+/// let utc = hourglass::Timezone::utc();
 /// let t = midnight_in_paris.project(&utc);
 ///
 /// assert_eq!(t.date(), (2015, 12, 24));
@@ -528,8 +600,8 @@ impl<'a> Datetime<'a> {
     /// - `%3`: millisecond (123)
     /// - `%6`: microsecond (123456)
     /// - `%9`: nanosecond (123456789)
-    /// - `%x`: UTC offset (+02:00 or -05:00)
-    /// - `%z`: UTC offset (+0200 or -0500)
+    /// - `%x`: `UTC` offset (+02:00 or -05:00)
+    /// - `%z`: `UTC` offset (+0200 or -0500)
     /// - `%Z`: timezone abbreviation (CET)
     /// - `%w`: weekday (1)
     /// - `%a`: abbreviated weekday name (Mon)
@@ -831,10 +903,10 @@ const LEAP_SECONDS: &'static [i64] = &[2272060800 - NTP_TO_UNIX,
 /// # Example
 ///
 /// ```rust
-/// let utc = tzdata::Timezone::utc();
+/// let utc = hourglass::Timezone::utc();
 /// let t = utc.datetime(2015, 6, 30, 0, 0, 0, 0);
 ///
-/// let add_86400_secs = t + tzdata::Deltatime::seconds(86400);
+/// let add_86400_secs = t + hourglass::Deltatime::seconds(86400);
 ///
 /// assert_eq!(add_86400_secs.date(), (2015, 6, 30));
 /// assert_eq!(add_86400_secs.time(), (23, 59, 60, 0));
