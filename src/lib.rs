@@ -852,6 +852,52 @@ impl<'a> Sub<Deltatime> for Datetime<'a> {
     }
 }
 
+impl<'a> Sub<Datetime<'a>> for Datetime<'a> {
+    type Output = Deltatime;
+    fn sub(self, rhs: Datetime<'a>) -> Self::Output {
+        if self < rhs {
+            return -(rhs - self);
+        }
+
+        // rhs <= self
+        let add_sec = match (LEAP_SECONDS.binary_search(&rhs.stamp.sec),
+                             LEAP_SECONDS.binary_search(&self.stamp.sec)) {
+            (Err(i), Err(j)) => (j - i) as i64,
+            (Err(i), Ok(j)) => {
+                (j - i) as i64 +
+                if self.is_60th_sec {
+                    0i64
+                } else {
+                    1i64
+                }
+            }
+            (Ok(i), Err(j)) => {
+                (j - i) as i64 +
+                if rhs.is_60th_sec {
+                    0i64
+                } else {
+                    -1i64
+                }
+            }
+            (Ok(i), Ok(j)) => {
+                (j - i) as i64 +
+                if rhs.is_60th_sec {
+                    0i64
+                } else {
+                    -1i64
+                } +
+                if self.is_60th_sec {
+                    0i64
+                } else {
+                    1i64
+                }
+            }
+        };
+        Deltatime::nanoseconds((self.stamp.sec - rhs.stamp.sec + add_sec) * 1_000_000_000 +
+                               (self.stamp.nsec - rhs.stamp.nsec) as i64)
+    }
+}
+
 impl<'a> fmt::Debug for Datetime<'a> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         write!(fmt, "{}", self.tm().rfc3339())
@@ -909,10 +955,10 @@ const LEAP_SECONDS: &'static [i64] = &[2272060800 - NTP_TO_UNIX,
 /// assert_eq!(add_86400_secs.date(), (2015, 6, 30));
 /// assert_eq!(add_86400_secs.time(), (23, 59, 60, 0));
 /// ```
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Deltatime(Delta);
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Delta {
     Nanoseconds(i64),
     Seconds(i64),
@@ -1518,5 +1564,54 @@ mod test {
         assert_eq!(d.as_minutes(), 1440);
         assert_eq!(d.as_hours(), 24);
         assert_eq!(d.as_days(), 1);
+    }
+
+    #[test]
+    fn test_sub_datetimes() {
+        let utc = Timezone::utc();
+        let t0 = utc.datetime(2015, 1, 1, 0, 0, 0, 0);
+        let t1 = utc.datetime(2015, 1, 2, 0, 0, 0, 0);
+        assert_eq!(t1 - t0, Deltatime::days(1));
+        assert_eq!(t0 - t1, Deltatime::days(-1));
+
+        let t0 = utc.datetime(2015, 6, 30, 23, 59, 59, 0);
+        let t1 = utc.datetime(2015, 7, 1, 0, 0, 1, 0);
+        assert_eq!(t1 - t0, Deltatime::seconds(3));
+        assert_eq!(t0 - t1, Deltatime::seconds(-3));
+
+        let t0 = utc.datetime(2015, 6, 30, 23, 59, 59, 0);
+        let t1 = utc.datetime(2015, 6, 30, 23, 59, 60, 0);
+        assert_eq!(t1 - t0, Deltatime::seconds(1));
+        assert_eq!(t0 - t1, Deltatime::seconds(-1));
+
+        let t0 = utc.datetime(2015, 6, 30, 23, 59, 59, 0);
+        let t1 = utc.datetime(2015, 7, 1, 0, 0, 0, 0);
+        assert_eq!(t1 - t0, Deltatime::seconds(2));
+        assert_eq!(t0 - t1, Deltatime::seconds(-2));
+
+        let t0 = utc.datetime(2015, 6, 30, 23, 59, 60, 0);
+        let t1 = utc.datetime(2015, 7, 1, 0, 0, 1, 0);
+        assert_eq!(t1 - t0, Deltatime::seconds(2));
+        assert_eq!(t0 - t1, Deltatime::seconds(-2));
+
+        let t0 = utc.datetime(2015, 7, 1, 0, 0, 0, 0);
+        let t1 = utc.datetime(2015, 7, 1, 0, 0, 1, 0);
+        assert_eq!(t1 - t0, Deltatime::seconds(1));
+        assert_eq!(t0 - t1, Deltatime::seconds(-1));
+
+        let t0 = utc.datetime(2015, 6, 30, 23, 59, 60, 0);
+        let t1 = utc.datetime(2015, 7, 1, 0, 0, 0, 0);
+        assert_eq!(t1 - t0, Deltatime::seconds(1));
+        assert_eq!(t0 - t1, Deltatime::seconds(-1));
+
+        let t0 = utc.datetime(2015, 6, 30, 23, 59, 60, 0);
+        let t1 = utc.datetime(2015, 6, 30, 23, 59, 60, 0);
+        assert_eq!(t1 - t0, Deltatime::seconds(0));
+        assert_eq!(t0 - t1, Deltatime::seconds(0));
+
+        let t0 = utc.datetime(2015, 7, 1, 0, 0, 0, 0);
+        let t1 = utc.datetime(2015, 7, 1, 0, 0, 0, 0);
+        assert_eq!(t1 - t0, Deltatime::seconds(0));
+        assert_eq!(t0 - t1, Deltatime::seconds(0));
     }
 }
