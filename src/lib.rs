@@ -964,6 +964,61 @@ impl Deltatime {
     pub fn days(n: i64) -> Self {
         Deltatime(Delta::Days(n))
     }
+
+    /// Returns the total number of nanoseconds contained in this delta.
+    /// If the delta is created from `Deltatime::days`, the number
+    /// of nanoseconds in a day is assumed to be `86400e9`.
+    pub fn as_nanoseconds(&self) -> i64 {
+        match self.0 {
+            Delta::Nanoseconds(n) => n,
+            Delta::Seconds(n) => n * 1_000_000_000,
+            Delta::Days(n) => n * 86400 * 1_000_000_000,
+        }
+    }
+
+    /// Returns the total number of microseconds contained in this delta.
+    /// If the delta is created from `Deltatime::days`, the number
+    /// of microseconds in a day is assumed to be `86400e6`.
+    pub fn as_microseconds(&self) -> i64 {
+        self.as_nanoseconds() / 1_000
+    }
+
+    /// Returns the total number of milliseconds contained in this delta.
+    /// If the delta is created from `Deltatime::days`, the number
+    /// of milliseconds in a day is assumed to be `86400e3`.
+    pub fn as_milliseconds(&self) -> i64 {
+        self.as_nanoseconds() / 1_000_000
+    }
+
+    /// Returns the total number of seconds contained in this delta.
+    /// If the delta is created from `Deltatime::days`, the number
+    /// of seconds in a day is assumed to be `86400`.
+    pub fn as_seconds(&self) -> i64 {
+        match self.0 {
+            Delta::Nanoseconds(n) => n / 1_000_000_000,
+            Delta::Seconds(n) => n,
+            Delta::Days(n) => n * 86400,
+        }
+    }
+
+    /// Returns the total number of minutes contained in this delta.
+    pub fn as_minutes(&self) -> i64 {
+        self.as_seconds() / 60
+    }
+
+    /// Returns the total number of hours contained in this delta.
+    pub fn as_hours(&self) -> i64 {
+        self.as_seconds() / 3_600
+    }
+
+    /// Returns the total number of days contained in this delta.
+    pub fn as_days(&self) -> i64 {
+        match self.0 {
+            Delta::Nanoseconds(n) => n / 1_000_000_000 / 86400,
+            Delta::Seconds(n) => n / 86400,
+            Delta::Days(n) => n,
+        }
+    }
 }
 
 
@@ -1400,5 +1455,35 @@ mod test {
         let t = t + Deltatime::days(1);
         assert_eq!(t.date(), (2015, 7, 2));
         assert_eq!(t.time(), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn test_delta_conversion() {
+        let d = Deltatime::nanoseconds(1);
+        assert_eq!(d.as_nanoseconds(), 1);
+        assert_eq!(d.as_microseconds(), 0);
+        assert_eq!(d.as_milliseconds(), 0);
+        assert_eq!(d.as_seconds(), 0);
+        assert_eq!(d.as_minutes(), 0);
+        assert_eq!(d.as_hours(), 0);
+        assert_eq!(d.as_days(), 0);
+
+        let d = Deltatime::seconds(1);
+        assert_eq!(d.as_nanoseconds(), 1_000_000_000);
+        assert_eq!(d.as_microseconds(), 1_000_000);
+        assert_eq!(d.as_milliseconds(), 1_000);
+        assert_eq!(d.as_seconds(), 1);
+        assert_eq!(d.as_minutes(), 0);
+        assert_eq!(d.as_hours(), 0);
+        assert_eq!(d.as_days(), 0);
+
+        let d = Deltatime::days(1);
+        assert_eq!(d.as_nanoseconds(), 1_000_000_000 * 86400);
+        assert_eq!(d.as_microseconds(), 1_000_000 * 86400);
+        assert_eq!(d.as_milliseconds(), 1_000 * 86400);
+        assert_eq!(d.as_seconds(), 1 * 86400);
+        assert_eq!(d.as_minutes(), 1440);
+        assert_eq!(d.as_hours(), 24);
+        assert_eq!(d.as_days(), 1);
     }
 }
