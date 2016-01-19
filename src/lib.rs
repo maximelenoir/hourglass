@@ -73,7 +73,7 @@ use std::rc::Rc;
 use std::io;
 use std::fmt;
 use std::cmp::{Eq, PartialEq, Ord, PartialOrd, Ordering};
-use std::ops::{Add, Sub};
+use std::ops::{Add, Sub, Neg};
 
 /// A timezone.
 ///
@@ -845,12 +845,7 @@ impl<'a> Add<Deltatime> for Datetime<'a> {
 impl<'a> Sub<Deltatime> for Datetime<'a> {
     type Output = Datetime<'a>;
     fn sub(self, rhs: Deltatime) -> Self::Output {
-        self +
-        Deltatime(match rhs.0 {
-            Delta::Nanoseconds(nano) => Delta::Nanoseconds(-nano),
-            Delta::Seconds(sec) => Delta::Seconds(-sec),
-            Delta::Days(day) => Delta::Days(-day),
-        })
+        self + (-rhs)
     }
 }
 
@@ -1019,8 +1014,43 @@ impl Deltatime {
             Delta::Days(n) => n,
         }
     }
+
+    /// Compare two `Deltatime`.
+    fn cmp_delta(&self, rhs: &Deltatime) -> Ordering {
+        self.as_nanoseconds().cmp(&rhs.as_nanoseconds())
+    }
 }
 
+impl PartialEq<Deltatime> for Deltatime {
+    fn eq(&self, other: &Deltatime) -> bool {
+        self.cmp_delta(&other) == Ordering::Equal
+    }
+}
+
+impl Eq for Deltatime {}
+
+impl PartialOrd<Deltatime> for Deltatime {
+    fn partial_cmp(&self, other: &Deltatime) -> Option<Ordering> {
+        Some(self.cmp_delta(&other))
+    }
+}
+
+impl Ord for Deltatime {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.cmp_delta(other)
+    }
+}
+
+impl Neg for Deltatime {
+    type Output = Deltatime;
+    fn neg(self) -> Self::Output {
+        Deltatime(match self.0 {
+            Delta::Nanoseconds(n) => Delta::Nanoseconds(-n),
+            Delta::Seconds(n) => Delta::Seconds(-n),
+            Delta::Days(n) => Delta::Days(-n),
+        })
+    }
+}
 
 #[cfg(test)]
 mod test {
