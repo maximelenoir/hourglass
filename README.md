@@ -72,3 +72,18 @@ assert_eq!(t_plus_1_day.date(), (2015, 7, 1));
 assert_eq!(t_plus_86400_sec.date(), (2015, 6, 30));
 assert_eq!(t_plus_86400_sec.time(), (23, 59, 60, 0));
 ```
+
+Two `Datetime` can also be compared:
+
+```rust
+use hourglass::{Timezone, Deltatime};
+
+let utc = Timezone::utc();
+let t0 = utc.datetime(2015, 6, 30, 0, 0, 0, 0);
+let t1 = utc.datetime(2015, 7, 1, 0, 0, 0, 0);
+
+assert_eq!(t0 < t1, true);
+assert_eq!(t0 >= t1, false);
+assert_eq!(t1 == t1, true);
+assert_eq!(t1 - t0, Deltatime::seconds(86401));
+```
