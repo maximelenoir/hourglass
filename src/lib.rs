@@ -689,7 +689,10 @@ impl<'a> PartialOrd<Datetime<'a>> for Datetime<'a> {
     fn partial_cmp(&self, other: &Datetime) -> Option<Ordering> {
         let cmp = self.stamp.cmp(&other.stamp);
         if let Ordering::Equal = cmp {
-            Some(self.is_60th_sec.cmp(&other.is_60th_sec))
+            // Having the 60th sec tag means
+            // that the time is Ordering::Less than
+            // the other time.
+            Some(other.is_60th_sec.cmp(&self.is_60th_sec))
         } else {
             Some(cmp)
         }
