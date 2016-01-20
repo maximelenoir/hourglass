@@ -702,14 +702,19 @@ impl<'a> Eq for Datetime<'a> {}
 
 impl<'a> PartialOrd<Datetime<'a>> for Datetime<'a> {
     fn partial_cmp(&self, other: &Datetime) -> Option<Ordering> {
-        let cmp = self.stamp.cmp(&other.stamp);
-        if let Ordering::Equal = cmp {
+        let cmp_sec = self.stamp.sec.cmp(&other.stamp.sec);
+        if let Ordering::Equal = cmp_sec {
             // Having the 60th sec tag means
             // that the time is Ordering::Less than
             // the other time.
-            Some(other.is_60th_sec.cmp(&self.is_60th_sec))
+            let cmp_leap = other.is_60th_sec.cmp(&self.is_60th_sec);
+            if let Ordering::Equal = cmp_leap {
+                Some(self.stamp.nsec.cmp(&other.stamp.nsec))
+            } else {
+                Some(cmp_leap)
+            }
         } else {
-            Some(cmp)
+            Some(cmp_sec)
         }
     }
 }
@@ -1579,6 +1584,24 @@ mod test {
         assert_eq!(d.as_minutes(), 1440);
         assert_eq!(d.as_hours(), 24);
         assert_eq!(d.as_days(), 1);
+    }
+
+    #[test]
+    fn test_cmp_datetimes() {
+        let utc = Timezone::utc();
+        let t0 = utc.datetime(2015, 1, 1, 0, 0, 0, 0);
+        let t1 = utc.datetime(2015, 1, 1, 0, 0, 0, 1);
+        assert!(t0 != t1);
+        assert!(t0 < t1);
+        assert!(t0 <= t1);
+
+        let t0 = utc.datetime(2015, 1, 1, 0, 0, 0, 0);
+        let t1 = utc.datetime(2015, 1, 1, 0, 0, 1, 0);
+        assert!(t0 < t1);
+
+        let t0 = utc.datetime(2015, 6, 30, 23, 59, 60, 1);
+        let t1 = utc.datetime(2015, 7, 1, 0, 0, 0, 0);
+        assert!(t0 < t1);
     }
 
     #[test]
