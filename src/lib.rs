@@ -42,7 +42,7 @@
 //! let paris = Timezone::new("Europe/Paris").unwrap();
 //!
 //! // Create a `Datetime` corresponding to midnight in Paris timezone...
-//! let t = paris.datetime(2015, 12, 25, 0, 0, 0, 0);
+//! let t = paris.datetime(2015, 12, 25, 0, 0, 0, 0).unwrap();
 //! // ... and project it into UTC timezone.
 //! let t_utc = t.project(&utc);
 //! assert_eq!(t_utc.date(), (2015, 12, 24));
@@ -56,7 +56,7 @@
 //! use hourglass::{Timezone, Deltatime};
 //!
 //! let utc = Timezone::utc();
-//! let t = utc.datetime(2015, 6, 30, 0, 0, 0, 0);
+//! let t = utc.datetime(2015, 6, 30, 0, 0, 0, 0).unwrap();
 //! let t_plus_1_day = t + Deltatime::days(1);
 //! let t_plus_86400_sec = t + Deltatime::seconds(86400);
 //!
@@ -72,8 +72,8 @@
 //! use hourglass::{Timezone, Deltatime};
 //!
 //! let utc = Timezone::utc();
-//! let t0 = utc.datetime(2015, 6, 30, 0, 0, 0, 0);
-//! let t1 = utc.datetime(2015, 7, 1, 0, 0, 0, 0);
+//! let t0 = utc.datetime(2015, 6, 30, 0, 0, 0, 0).unwrap();
+//! let t1 = utc.datetime(2015, 7, 1, 0, 0, 0, 0).unwrap();
 //!
 //! assert_eq!(t0 < t1, true);
 //! assert_eq!(t0 >= t1, false);
@@ -87,6 +87,7 @@ mod parse;
 use std::rc::Rc;
 use std::io;
 use std::fmt;
+use std::error;
 use std::cmp::{Eq, PartialEq, Ord, PartialOrd, Ordering};
 use std::ops::{Add, Sub, Neg};
 
@@ -226,18 +227,20 @@ impl Timezone {
         }
     }
 
-    /// Parse a `Datetime` relative to this `Timezone` according
-    /// to the given format. Timezone-related field are ignored.
-    /// Panics if the string does not match the format.
-    pub fn parse(&self, s: &str, fmt: &str) -> Datetime {
-        let tm = time::strptime(s, fmt).unwrap();
-        self.datetime(tm.tm_year + 1900,
+    /// Parse a `Datetime` relative to this `Timezone` according to the
+    /// given format. Timezone-related field are ignored. An `InputError`
+    /// is returned if the string does not match the format.
+    pub fn parse(&self, s: &str, fmt: &str) -> Result<Datetime, InputError> {
+        match time::strptime(s, fmt) {
+            Err(_) => Err(InputError::InvalidFormat),
+            Ok(tm) => self.datetime(tm.tm_year + 1900,
                       tm.tm_mon + 1,
                       tm.tm_mday,
                       tm.tm_hour,
                       tm.tm_min,
                       tm.tm_sec,
-                      tm.tm_nsec)
+                      tm.tm_nsec),
+        }
     }
 
     /// Create a new `Datetime` from a Unix timestamp. The provided
@@ -245,22 +248,25 @@ impl Timezone {
     /// leap seconds that may have happened in between. A Unix timestamp
     /// is ambiguous on leap second insertion (e.g. `1435708800` is
     /// equal to both `2015-06-30T23:59:60Z` and `2015-07-01T00:00:00Z`)
-    /// however, `unix` will always choose the non-leap second. Panics
-    /// if `nano` ∉ [0, 999999999].
-    pub fn unix(&self, stamp: i64, nano: i32) -> Datetime {
-        assert!(nano >= 0 && nano < 1_000_000_000);
-        Datetime {
+    /// however, `unix` will always choose the non-leap second. Return
+    /// an `InputError` if `nano` ∉ [0, 999999999].
+    pub fn unix(&self, stamp: i64, nano: i32) -> Result<Datetime, InputError> {
+        if nano < 0 || nano > 999_999_999 {
+            return Err(InputError::InvalidNano);
+        }
+
+        Ok(Datetime {
             tz: self,
             stamp: time::Timespec {
                 sec: stamp,
                 nsec: nano,
             },
             is_60th_sec: false,
-        }
+        })
     }
 
     /// Create a new `Datetime` relative to this `Timezone`.
-    /// Panics if the following constraints do not hold:
+    /// An `InputError` is returned if the following constraints do not hold:
     ///
     /// - `month` ∊ [1, 12]
     /// - `day` ∊ [1, 31] and is valid within the month
@@ -276,15 +282,22 @@ impl Timezone {
                     minute: i32,
                     second: i32,
                     nano: i32)
-                    -> Datetime {
+                    -> Result<Datetime, InputError> {
         let is_leap_year = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
 
-        // Panics if constaints described in documentation do not hold.
-        assert!(month >= 1 && month <= 12);
-        assert!(hour <= 23);
-        assert!(minute <= 59);
-        assert!(second <= 60);
-        assert!(nano <= 999_999_999);
+        // Error if constaints described in documentation do not hold.
+        if month < 1 || month > 12 {
+            return Err(InputError::InvalidMonth);
+        } else if hour < 0 || hour > 23 {
+            return Err(InputError::InvalidHour);
+        } else if minute < 0 || minute > 59 {
+            return Err(InputError::InvalidMinute);
+        } else if second < 0 || second > 60 {
+            return Err(InputError::InvalidSecond);
+        } else if nano < 0 || nano > 999_999_999 {
+            return Err(InputError::InvalidNano);
+        }
+
         let max_day = match month {
             1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
             4 | 6 | 9 | 11 => 30,
@@ -292,7 +305,10 @@ impl Timezone {
             2 => 29,
             _ => unreachable!(),
         };
-        assert!(day >= 1 && day <= max_day);
+
+        if day < 1 || day > max_day {
+            return Err(InputError::InvalidDay);
+        }
 
         // Let the time crate do the heavy lifting.
         let utc_dt = time::Tm {
@@ -318,9 +334,9 @@ impl Timezone {
 
         if second == 60 && year >= 1972 {
             if let Err(_) = LEAP_SECONDS.binary_search(&(stamp.sec + 1)) {
-                panic!("not a valid leap second");
+                return Err(InputError::InvalidLeapSecond);
             }
-            Datetime {
+            Ok(Datetime {
                 tz: self,
                 stamp: time::Timespec {
                     // This is actually 00:00:00. I cheated
@@ -333,13 +349,13 @@ impl Timezone {
                     nsec: stamp.nsec,
                 },
                 is_60th_sec: true,
-            }
+            })
         } else {
-            Datetime {
+            Ok(Datetime {
                 tz: self,
                 stamp: stamp,
                 is_60th_sec: false,
-            }
+            })
         }
     }
 }
@@ -484,7 +500,7 @@ impl TransRule {
 ///
 /// ```rust
 /// let paris = hourglass::Timezone::new("Europe/Paris").unwrap();
-/// let midnight_in_paris = paris.datetime(2015, 12, 25, 0, 0, 0, 0);
+/// let midnight_in_paris = paris.datetime(2015, 12, 25, 0, 0, 0, 0).unwrap();
 ///
 /// let utc = hourglass::Timezone::utc();
 /// let t = midnight_in_paris.project(&utc);
@@ -625,8 +641,8 @@ impl<'a> Datetime<'a> {
     /// - `%B`: full month name (January)
     /// - `%C`: century (20)
     ///
-    /// Panics if the format is invalid.
-    pub fn format(&self, fmt: &str) -> String {
+    /// Returns a `FmtError` if the format is invalid.
+    pub fn format(&self, fmt: &str) -> Result<String, FmtError> {
         use std::fmt::Write;
 
         let mut out = String::with_capacity(2 * fmt.len());
@@ -642,7 +658,7 @@ impl<'a> Datetime<'a> {
                 None => break,
                 Some('%') => {
                     match chars.next() {
-                        None => panic!("Unfinished formatting after %"),
+                        None => return Err(FmtError::UnexpectedEndOfString),
                         Some('%') => out.push('%'),
                         Some('Y') => write!(out, "{:04}", date.0).unwrap_or(()),
                         Some('m') => write!(out, "{:02}", date.1).unwrap_or(()),
@@ -671,24 +687,24 @@ impl<'a> Datetime<'a> {
                         Some('b') => write!(out, "{}", &Self::tm_to_month(&tm)[..3]).unwrap_or(()),
                         Some('B') => write!(out, "{}", Self::tm_to_month(&tm)).unwrap_or(()),
                         Some('C') => write!(out, "{}", date.0 / 100).unwrap_or(()),
-                        Some(c) => panic!("unknown format control %{}", c),
+                        Some(c) => return Err(FmtError::InvalidFormatter(c)),
                     }
                 }
                 Some(c) => out.push(c),
             }
         }
 
-        out
+        Ok(out)
     }
 
     /// Format `Datetime` according to RFC 3339 format.
     pub fn rfc3339(&self) -> String {
-        self.format("%Y-%m-%dT%H:%M:%S%x")
+        self.format("%Y-%m-%dT%H:%M:%S%x").unwrap()
     }
 
     /// Format `Datetime` according to RFC 2822 format.
     pub fn rfc2822(&self) -> String {
-        self.format("%a, %e %b %Y %H:%M:%S %z")
+        self.format("%a, %e %b %Y %H:%M:%S %z").unwrap()
     }
 }
 
@@ -924,6 +940,76 @@ impl<'a> fmt::Debug for Datetime<'a> {
     }
 }
 
+/// Possible errors when creating a `Datetime`.
+pub enum InputError {
+    InvalidMonth,
+    InvalidDay,
+    InvalidHour,
+    InvalidMinute,
+    InvalidSecond,
+    InvalidNano,
+    InvalidLeapSecond,
+    InvalidFormat,
+}
+
+impl fmt::Debug for InputError {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        use std::error::Error;
+        write!(fmt, "{}", self.description())
+    }
+}
+
+impl fmt::Display for InputError {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        use std::error::Error;
+        write!(fmt, "{}", self.description())
+    }
+}
+
+impl error::Error for InputError {
+    fn description(&self) -> &str {
+        match *self {
+            InputError::InvalidMonth => "invalid month",
+            InputError::InvalidDay => "invalid day",
+            InputError::InvalidHour => "invalid hour",
+            InputError::InvalidMinute => "invalid minute",
+            InputError::InvalidSecond => "invalid second",
+            InputError::InvalidNano => "invalid nanosecond",
+            InputError::InvalidLeapSecond => "invalid leap second",
+            InputError::InvalidFormat => "invalid format",
+        }
+    }
+}
+
+/// Possible errors when formatting a `Datetime`.
+pub enum FmtError {
+    UnexpectedEndOfString,
+    InvalidFormatter(char),
+}
+
+impl fmt::Debug for FmtError {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        use std::error::Error;
+        write!(fmt, "{}", self.description())
+    }
+}
+
+impl fmt::Display for FmtError {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        use std::error::Error;
+        write!(fmt, "{}", self.description())
+    }
+}
+
+impl error::Error for FmtError {
+    fn description(&self) -> &str {
+        match *self {
+            FmtError::UnexpectedEndOfString => "unexpected end of string",
+            FmtError::InvalidFormatter(_) => "invalid formatter",
+        }
+    }
+}
+
 // FIXME: is reading /usr/share/zoneinfo/leap-seconds.list
 // a better way to store the leap information?
 const NTP_TO_UNIX: i64 = 2208988800;
@@ -968,7 +1054,7 @@ const LEAP_SECONDS: &'static [i64] = &[2272060800 - NTP_TO_UNIX,
 ///
 /// ```rust
 /// let utc = hourglass::Timezone::utc();
-/// let t = utc.datetime(2015, 6, 30, 0, 0, 0, 0);
+/// let t = utc.datetime(2015, 6, 30, 0, 0, 0, 0).unwrap();
 ///
 /// let add_86400_secs = t + hourglass::Deltatime::seconds(86400);
 ///
@@ -1137,7 +1223,7 @@ mod test {
                 sec: stamp,
                 nsec: 0,
             };
-            let dt = utc.datetime(y, m, d, h, mi, s, n);
+            let dt = utc.datetime(y, m, d, h, mi, s, n).unwrap();
             assert_eq!(dt.stamp, stamp);
             assert_eq!(dt.is_60th_sec, false);
         }
@@ -1146,12 +1232,12 @@ mod test {
     #[test]
     fn test_leap_second() {
         let utc = Timezone::utc();
-        let t = utc.datetime(2015, 6, 30, 23, 59, 59, 0);
-        let t_leap = utc.datetime(2015, 6, 30, 23, 59, 60, 0);
+        let t = utc.datetime(2015, 6, 30, 23, 59, 59, 0).unwrap();
+        let t_leap = utc.datetime(2015, 6, 30, 23, 59, 60, 0).unwrap();
         assert_eq!(t.is_60th_sec, false);
         assert_eq!(t_leap.is_60th_sec, true);
         assert_eq!(t.stamp.sec + 1, t_leap.stamp.sec);
-        assert_eq!(t_leap.format("%S"), "60");
+        assert_eq!(t_leap.format("%S").unwrap(), "60");
         assert_eq!(t_leap.date(), (2015, 6, 30));
         assert_eq!(t_leap.time(), (23, 59, 60, 0));
         assert_eq!(t_leap.unix(), 1435708800);
@@ -1164,7 +1250,7 @@ mod test {
         let seoul = Timezone::new("Asia/Seoul").unwrap();
         let new_york = Timezone::new("America/New_York").unwrap();
 
-        let t = utc.datetime(2016, 1, 15, 20, 0, 0, 0);
+        let t = utc.datetime(2016, 1, 15, 20, 0, 0, 0).unwrap();
         let t_seoul = t.project(&seoul);
         let t_ny = t.project(&new_york);
 
@@ -1181,20 +1267,21 @@ mod test {
     #[test]
     fn test_format() {
         let paris = Timezone::new("Europe/Paris").unwrap();
-        let t = paris.datetime(2006, 1, 2, 15, 4, 5, 123_456_789);
+        let t = paris.datetime(2006, 1, 2, 15, 4, 5, 123_456_789).unwrap();
 
-        assert_eq!(t.format("%Y-%m-%dT%H:%M:%S"), "2006-01-02T15:04:05");
-        assert_eq!(t.format("%3"), "123");
-        assert_eq!(t.format("%6"), "123456");
-        assert_eq!(t.format("%9"), "123456789");
-        assert_eq!(t.format("%z"), "+0100");
-        assert_eq!(t.format("%Z"), "CET");
-        assert_eq!(t.format("%w"), "1");
-        assert_eq!(t.format("%a"), "Mon");
-        assert_eq!(t.format("%A"), "Monday");
-        assert_eq!(t.format("%b"), "Jan");
-        assert_eq!(t.format("%B"), "January");
-        assert_eq!(t.format("%C"), "20");
+        assert_eq!(t.format("%Y-%m-%dT%H:%M:%S").unwrap(),
+                   "2006-01-02T15:04:05");
+        assert_eq!(t.format("%3").unwrap(), "123");
+        assert_eq!(t.format("%6").unwrap(), "123456");
+        assert_eq!(t.format("%9").unwrap(), "123456789");
+        assert_eq!(t.format("%z").unwrap(), "+0100");
+        assert_eq!(t.format("%Z").unwrap(), "CET");
+        assert_eq!(t.format("%w").unwrap(), "1");
+        assert_eq!(t.format("%a").unwrap(), "Mon");
+        assert_eq!(t.format("%A").unwrap(), "Monday");
+        assert_eq!(t.format("%b").unwrap(), "Jan");
+        assert_eq!(t.format("%B").unwrap(), "January");
+        assert_eq!(t.format("%C").unwrap(), "20");
         assert_eq!(t.rfc3339(), "2006-01-02T15:04:05+01:00");
         assert_eq!(t.rfc2822(), "Mon, 2 Jan 2006 15:04:05 +0100");
     }
@@ -1204,7 +1291,7 @@ mod test {
         let paris = Timezone::new("Europe/Paris").unwrap();
         let utc = Timezone::utc();
 
-        let t = paris.parse("2006-01-02T15:04:05", "%Y-%m-%dT%H:%M:%S");
+        let t = paris.parse("2006-01-02T15:04:05", "%Y-%m-%dT%H:%M:%S").unwrap();
         let t_utc = t.project(&utc);
         assert_eq!(t_utc.date(), (2006, 1, 2));
         assert_eq!(t_utc.time(), (14, 4, 5, 0));
@@ -1430,127 +1517,127 @@ mod test {
         let utc = Timezone::utc();
 
         // nano
-        let t = utc.datetime(2015, 6, 30, 23, 59, 59, 999_999_999);
+        let t = utc.datetime(2015, 6, 30, 23, 59, 59, 999_999_999).unwrap();
         let t = t + Deltatime::nanoseconds(2);
         assert_eq!(t.date(), (2015, 6, 30));
         assert_eq!(t.time(), (23, 59, 60, 1));
 
-        let t = utc.datetime(2015, 6, 30, 23, 59, 60, 1);
+        let t = utc.datetime(2015, 6, 30, 23, 59, 60, 1).unwrap();
         let t = t + Deltatime::nanoseconds(-2);
         assert_eq!(t.date(), (2015, 6, 30));
         assert_eq!(t.time(), (23, 59, 59, 999_999_999));
 
-        let t = utc.datetime(2015, 6, 30, 23, 59, 60, 200_000_000);
+        let t = utc.datetime(2015, 6, 30, 23, 59, 60, 200_000_000).unwrap();
         let t = t + Deltatime::nanoseconds(-300_000_000);
         assert_eq!(t.date(), (2015, 6, 30));
         assert_eq!(t.time(), (23, 59, 59, 900_000_000));
 
-        let t = utc.datetime(2015, 6, 30, 23, 59, 60, 1);
+        let t = utc.datetime(2015, 6, 30, 23, 59, 60, 1).unwrap();
         let t = t + Deltatime::nanoseconds(-1_000_000_002);
         assert_eq!(t.date(), (2015, 6, 30));
         assert_eq!(t.time(), (23, 59, 58, 999_999_999));
 
         // second regular -> leap
-        let t = utc.datetime(2015, 6, 30, 23, 59, 59, 0);
+        let t = utc.datetime(2015, 6, 30, 23, 59, 59, 0).unwrap();
         let t = t + Deltatime::seconds(1);
         assert_eq!(t.date(), (2015, 6, 30));
         assert_eq!(t.time(), (23, 59, 60, 0));
 
-        let t = utc.datetime(2015, 6, 30, 23, 59, 60, 0);
+        let t = utc.datetime(2015, 6, 30, 23, 59, 60, 0).unwrap();
         let t = t + Deltatime::seconds(-1);
         assert_eq!(t.date(), (2015, 6, 30));
         assert_eq!(t.time(), (23, 59, 59, 0));
 
         // second leap -> regular
-        let t = utc.datetime(2015, 6, 30, 23, 59, 60, 0);
+        let t = utc.datetime(2015, 6, 30, 23, 59, 60, 0).unwrap();
         let t = t + Deltatime::seconds(1);
         assert_eq!(t.date(), (2015, 7, 1));
         assert_eq!(t.time(), (0, 0, 0, 0));
 
-        let t = utc.datetime(2015, 7, 1, 0, 0, 0, 0);
+        let t = utc.datetime(2015, 7, 1, 0, 0, 0, 0).unwrap();
         let t = t + Deltatime::seconds(-1);
         assert_eq!(t.date(), (2015, 6, 30));
         assert_eq!(t.time(), (23, 59, 60, 0));
 
         // second regular -> regular
-        let t = utc.datetime(2015, 6, 30, 23, 59, 59, 0);
+        let t = utc.datetime(2015, 6, 30, 23, 59, 59, 0).unwrap();
         let t = t + Deltatime::seconds(2);
         assert_eq!(t.date(), (2015, 7, 1));
         assert_eq!(t.time(), (0, 0, 0, 0));
 
-        let t = utc.datetime(2015, 7, 1, 0, 0, 0, 0);
+        let t = utc.datetime(2015, 7, 1, 0, 0, 0, 0).unwrap();
         let t = t + Deltatime::seconds(-2);
         assert_eq!(t.date(), (2015, 6, 30));
         assert_eq!(t.time(), (23, 59, 59, 0));
 
-        let t = utc.datetime(2015, 7, 1, 0, 0, 0, 0);
+        let t = utc.datetime(2015, 7, 1, 0, 0, 0, 0).unwrap();
         let t = t + Deltatime::seconds(1);
         assert_eq!(t.date(), (2015, 7, 1));
         assert_eq!(t.time(), (0, 0, 1, 0));
 
-        let t = utc.datetime(2015, 7, 1, 0, 0, 1, 0);
+        let t = utc.datetime(2015, 7, 1, 0, 0, 1, 0).unwrap();
         let t = t + Deltatime::seconds(-1);
         assert_eq!(t.date(), (2015, 7, 1));
         assert_eq!(t.time(), (0, 0, 0, 0));
 
-        let t = utc.datetime(2015, 6, 30, 23, 59, 59, 0);
+        let t = utc.datetime(2015, 6, 30, 23, 59, 59, 0).unwrap();
         let t = t + Deltatime::seconds(3);
         assert_eq!(t.date(), (2015, 7, 1));
         assert_eq!(t.time(), (0, 0, 1, 0));
 
-        let t = utc.datetime(2015, 7, 1, 0, 0, 1, 0);
+        let t = utc.datetime(2015, 7, 1, 0, 0, 1, 0).unwrap();
         let t = t + Deltatime::seconds(-3);
         assert_eq!(t.date(), (2015, 6, 30));
         assert_eq!(t.time(), (23, 59, 59, 0));
 
-        let t = utc.datetime(2012, 1, 1, 0, 0, 0, 0);
+        let t = utc.datetime(2012, 1, 1, 0, 0, 0, 0).unwrap();
         let t = t + Deltatime::seconds(126230402); // 4 years, 2 leaps
         assert_eq!(t.date(), (2016, 1, 1));
         assert_eq!(t.time(), (0, 0, 0, 0));
 
-        let t = utc.datetime(2016, 1, 1, 0, 0, 0, 0);
+        let t = utc.datetime(2016, 1, 1, 0, 0, 0, 0).unwrap();
         let t = t + Deltatime::seconds(-126230402);
         assert_eq!(t.date(), (2012, 1, 1));
         assert_eq!(t.time(), (0, 0, 0, 0));
 
         // second leap -> leap
-        let t = utc.datetime(2015, 6, 30, 23, 59, 60, 0);
+        let t = utc.datetime(2015, 6, 30, 23, 59, 60, 0).unwrap();
         let t = t + Deltatime::seconds(0);
         assert_eq!(t.date(), (2015, 6, 30));
         assert_eq!(t.time(), (23, 59, 60, 0));
 
-        let t = utc.datetime(2012, 6, 30, 23, 59, 60, 0);
+        let t = utc.datetime(2012, 6, 30, 23, 59, 60, 0).unwrap();
         let t = t + Deltatime::seconds(94608001);
         assert_eq!(t.date(), (2015, 6, 30));
         assert_eq!(t.time(), (23, 59, 60, 0));
 
-        let t = utc.datetime(2015, 6, 30, 23, 59, 60, 0);
+        let t = utc.datetime(2015, 6, 30, 23, 59, 60, 0).unwrap();
         let t = t + Deltatime::seconds(-94608001);
         assert_eq!(t.date(), (2012, 6, 30));
         assert_eq!(t.time(), (23, 59, 60, 0));
 
         // days
-        let t = utc.datetime(2016, 2, 29, 0, 0, 0, 0);
+        let t = utc.datetime(2016, 2, 29, 0, 0, 0, 0).unwrap();
         let t = t + Deltatime::days(1);
         assert_eq!(t.date(), (2016, 3, 1));
         assert_eq!(t.time(), (0, 0, 0, 0));
 
-        let t = utc.datetime(2016, 3, 1, 0, 0, 0, 0);
+        let t = utc.datetime(2016, 3, 1, 0, 0, 0, 0).unwrap();
         let t = t + Deltatime::days(-1);
         assert_eq!(t.date(), (2016, 2, 29));
         assert_eq!(t.time(), (0, 0, 0, 0));
 
-        let t = utc.datetime(2016, 1, 1, 0, 0, 0, 0);
+        let t = utc.datetime(2016, 1, 1, 0, 0, 0, 0).unwrap();
         let t = t + Deltatime::days(366);
         assert_eq!(t.date(), (2017, 1, 1));
         assert_eq!(t.time(), (0, 0, 0, 0));
 
-        let t = utc.datetime(2017, 1, 1, 0, 0, 0, 0);
+        let t = utc.datetime(2017, 1, 1, 0, 0, 0, 0).unwrap();
         let t = t + Deltatime::days(-366);
         assert_eq!(t.date(), (2016, 1, 1));
         assert_eq!(t.time(), (0, 0, 0, 0));
 
-        let t = utc.datetime(2015, 6, 30, 23, 59, 60, 0);
+        let t = utc.datetime(2015, 6, 30, 23, 59, 60, 0).unwrap();
         let t = t + Deltatime::days(1);
         assert_eq!(t.date(), (2015, 7, 2));
         assert_eq!(t.time(), (0, 0, 0, 0));
@@ -1589,66 +1676,66 @@ mod test {
     #[test]
     fn test_cmp_datetimes() {
         let utc = Timezone::utc();
-        let t0 = utc.datetime(2015, 1, 1, 0, 0, 0, 0);
-        let t1 = utc.datetime(2015, 1, 1, 0, 0, 0, 1);
+        let t0 = utc.datetime(2015, 1, 1, 0, 0, 0, 0).unwrap();
+        let t1 = utc.datetime(2015, 1, 1, 0, 0, 0, 1).unwrap();
         assert!(t0 != t1);
         assert!(t0 < t1);
         assert!(t0 <= t1);
 
-        let t0 = utc.datetime(2015, 1, 1, 0, 0, 0, 0);
-        let t1 = utc.datetime(2015, 1, 1, 0, 0, 1, 0);
+        let t0 = utc.datetime(2015, 1, 1, 0, 0, 0, 0).unwrap();
+        let t1 = utc.datetime(2015, 1, 1, 0, 0, 1, 0).unwrap();
         assert!(t0 < t1);
 
-        let t0 = utc.datetime(2015, 6, 30, 23, 59, 60, 1);
-        let t1 = utc.datetime(2015, 7, 1, 0, 0, 0, 0);
+        let t0 = utc.datetime(2015, 6, 30, 23, 59, 60, 1).unwrap();
+        let t1 = utc.datetime(2015, 7, 1, 0, 0, 0, 0).unwrap();
         assert!(t0 < t1);
     }
 
     #[test]
     fn test_sub_datetimes() {
         let utc = Timezone::utc();
-        let t0 = utc.datetime(2015, 1, 1, 0, 0, 0, 0);
-        let t1 = utc.datetime(2015, 1, 2, 0, 0, 0, 0);
+        let t0 = utc.datetime(2015, 1, 1, 0, 0, 0, 0).unwrap();
+        let t1 = utc.datetime(2015, 1, 2, 0, 0, 0, 0).unwrap();
         assert_eq!(t1 - t0, Deltatime::days(1));
         assert_eq!(t0 - t1, Deltatime::days(-1));
 
-        let t0 = utc.datetime(2015, 6, 30, 23, 59, 59, 0);
-        let t1 = utc.datetime(2015, 7, 1, 0, 0, 1, 0);
+        let t0 = utc.datetime(2015, 6, 30, 23, 59, 59, 0).unwrap();
+        let t1 = utc.datetime(2015, 7, 1, 0, 0, 1, 0).unwrap();
         assert_eq!(t1 - t0, Deltatime::seconds(3));
         assert_eq!(t0 - t1, Deltatime::seconds(-3));
 
-        let t0 = utc.datetime(2015, 6, 30, 23, 59, 59, 0);
-        let t1 = utc.datetime(2015, 6, 30, 23, 59, 60, 0);
+        let t0 = utc.datetime(2015, 6, 30, 23, 59, 59, 0).unwrap();
+        let t1 = utc.datetime(2015, 6, 30, 23, 59, 60, 0).unwrap();
         assert_eq!(t1 - t0, Deltatime::seconds(1));
         assert_eq!(t0 - t1, Deltatime::seconds(-1));
 
-        let t0 = utc.datetime(2015, 6, 30, 23, 59, 59, 0);
-        let t1 = utc.datetime(2015, 7, 1, 0, 0, 0, 0);
+        let t0 = utc.datetime(2015, 6, 30, 23, 59, 59, 0).unwrap();
+        let t1 = utc.datetime(2015, 7, 1, 0, 0, 0, 0).unwrap();
         assert_eq!(t1 - t0, Deltatime::seconds(2));
         assert_eq!(t0 - t1, Deltatime::seconds(-2));
 
-        let t0 = utc.datetime(2015, 6, 30, 23, 59, 60, 0);
-        let t1 = utc.datetime(2015, 7, 1, 0, 0, 1, 0);
+        let t0 = utc.datetime(2015, 6, 30, 23, 59, 60, 0).unwrap();
+        let t1 = utc.datetime(2015, 7, 1, 0, 0, 1, 0).unwrap();
         assert_eq!(t1 - t0, Deltatime::seconds(2));
         assert_eq!(t0 - t1, Deltatime::seconds(-2));
 
-        let t0 = utc.datetime(2015, 7, 1, 0, 0, 0, 0);
-        let t1 = utc.datetime(2015, 7, 1, 0, 0, 1, 0);
+        let t0 = utc.datetime(2015, 7, 1, 0, 0, 0, 0).unwrap();
+        let t1 = utc.datetime(2015, 7, 1, 0, 0, 1, 0).unwrap();
         assert_eq!(t1 - t0, Deltatime::seconds(1));
         assert_eq!(t0 - t1, Deltatime::seconds(-1));
 
-        let t0 = utc.datetime(2015, 6, 30, 23, 59, 60, 0);
-        let t1 = utc.datetime(2015, 7, 1, 0, 0, 0, 0);
+        let t0 = utc.datetime(2015, 6, 30, 23, 59, 60, 0).unwrap();
+        let t1 = utc.datetime(2015, 7, 1, 0, 0, 0, 0).unwrap();
         assert_eq!(t1 - t0, Deltatime::seconds(1));
         assert_eq!(t0 - t1, Deltatime::seconds(-1));
 
-        let t0 = utc.datetime(2015, 6, 30, 23, 59, 60, 0);
-        let t1 = utc.datetime(2015, 6, 30, 23, 59, 60, 0);
+        let t0 = utc.datetime(2015, 6, 30, 23, 59, 60, 0).unwrap();
+        let t1 = utc.datetime(2015, 6, 30, 23, 59, 60, 0).unwrap();
         assert_eq!(t1 - t0, Deltatime::seconds(0));
         assert_eq!(t0 - t1, Deltatime::seconds(0));
 
-        let t0 = utc.datetime(2015, 7, 1, 0, 0, 0, 0);
-        let t1 = utc.datetime(2015, 7, 1, 0, 0, 0, 0);
+        let t0 = utc.datetime(2015, 7, 1, 0, 0, 0, 0).unwrap();
+        let t1 = utc.datetime(2015, 7, 1, 0, 0, 0, 0).unwrap();
         assert_eq!(t1 - t0, Deltatime::seconds(0));
         assert_eq!(t0 - t1, Deltatime::seconds(0));
     }
