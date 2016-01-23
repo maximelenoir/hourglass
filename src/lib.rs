@@ -109,12 +109,10 @@ use std::ops::{Add, Sub, Neg};
 /// for tzname in &["Europe/Paris", "America/New_York", "Asia/Seoul"] {
 ///     let tz = hourglass::Timezone::new(tzname).unwrap();
 ///     let now = now.project(&tz);
-///     println!("it is now {:?} in {}", now, tz.name);
+///     println!("it is now {:?} in {}", now, tzname);
 /// }
 /// ```
 pub struct Timezone {
-    /// The timezone name e.g. `Europe/Paris`.
-    pub name: String,
     /// The `UTC` offset transitions
     trans: Vec<Transition>,
     /// The extra transition rule
@@ -185,7 +183,6 @@ impl Timezone {
     /// The provided offset is in seconds.
     pub fn fixed(sec: i32) -> Self {
         Timezone {
-            name: "UTC".to_owned(),
             trans: vec![Transition {
                             utc: std::i64::MIN,
                             ttype: Rc::new(Type {

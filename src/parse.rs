@@ -80,7 +80,6 @@ pub fn load_timezone(timezone: &str) -> io::Result<Timezone> {
                                     .collect();
 
     Ok(Timezone {
-        name: timezone.to_owned(),
         trans: trans.iter()
                     .zip(type_idx.iter())
                     .map(|(&tran, &typ_idx)| {
