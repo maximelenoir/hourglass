@@ -80,13 +80,14 @@
 //! assert_eq!(t1 == t1, true);
 //! assert_eq!(t1 - t0, Deltatime::seconds(86401));
 //! ```
-extern crate time;
+extern crate libc;
 
 mod parse;
 
 use std::rc::Rc;
 use std::io;
 use std::fmt;
+use std::ptr;
 use std::error;
 use std::cmp::{Eq, PartialEq, Ord, PartialOrd, Ordering};
 use std::ops::{Add, Sub, Neg};
@@ -220,9 +221,17 @@ impl Timezone {
 
     /// Return the `Datetime` representing now, relative to this `Timezone`.
     pub fn now(&self) -> Datetime {
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+
+        unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts) };
+
         Datetime {
             tz: self,
-            stamp: time::get_time(),
+            sec: ts.tv_sec,
+            nano: ts.tv_nsec as i32,
             is_60th_sec: false,
         }
     }
@@ -231,15 +240,36 @@ impl Timezone {
     /// given format. Timezone-related field are ignored. An `InputError`
     /// is returned if the string does not match the format.
     pub fn parse(&self, s: &str, fmt: &str) -> Result<Datetime, InputError> {
-        match time::strptime(s, fmt) {
-            Err(_) => Err(InputError::InvalidFormat),
-            Ok(tm) => self.datetime(tm.tm_year + 1900,
-                      tm.tm_mon + 1,
-                      tm.tm_mday,
-                      tm.tm_hour,
-                      tm.tm_min,
-                      tm.tm_sec,
-                      tm.tm_nsec),
+        let mut tm = libc::tm {
+            tm_sec: 0,
+            tm_min: 0,
+            tm_hour: 0,
+            tm_mday: 1,
+            tm_mon: 0,
+            tm_year: 0,
+            tm_wday: 0,
+            tm_yday: 0,
+            tm_isdst: 0,
+            // Unused
+            tm_gmtoff: 0,
+            tm_zone: ptr::null(),
+        };
+        let ret = unsafe {
+            strptime(s.as_ptr() as *const libc::c_char,
+                     fmt.as_ptr() as *const libc::c_char,
+                     &mut tm)
+        };
+
+        if ret == ptr::null() {
+            Err(InputError::InvalidFormat)
+        } else {
+            self.datetime(tm.tm_year + 1900,
+                          tm.tm_mon + 1,
+                          tm.tm_mday,
+                          tm.tm_hour,
+                          tm.tm_min,
+                          tm.tm_sec,
+                          0)
         }
     }
 
@@ -257,10 +287,8 @@ impl Timezone {
 
         Ok(Datetime {
             tz: self,
-            stamp: time::Timespec {
-                sec: stamp,
-                nsec: nano,
-            },
+            sec: stamp,
+            nano: nano,
             is_60th_sec: false,
         })
     }
@@ -310,8 +338,8 @@ impl Timezone {
             return Err(InputError::InvalidDay);
         }
 
-        // Let the time crate do the heavy lifting.
-        let utc_dt = time::Tm {
+        // Let the libc do the heavy lifting.
+        let utc_dt = libc::tm {
             tm_sec: if second == 60 {
                 59
             } else {
@@ -325,35 +353,34 @@ impl Timezone {
             tm_wday: 0,
             tm_yday: 0,
             tm_isdst: 0,
-            tm_utcoff: 0,
-            tm_nsec: nano as i32,
+            tm_gmtoff: 0,
+            tm_zone: ptr::null(),
         };
-        let mut stamp = utc_dt.to_timespec();
-        let utc_offset = self.offset(stamp.sec).off;
-        stamp.sec -= utc_offset as i64;
 
-        if second == 60 && year >= 1972 {
-            if let Err(_) = LEAP_SECONDS.binary_search(&(stamp.sec + 1)) {
+        let mut sec = tm_to_stamp(&utc_dt);
+        let utc_offset = self.offset(sec).off;
+        sec -= utc_offset as i64;
+
+        if second == 60 {
+            if let Err(_) = LEAP_SECONDS.binary_search(&(sec + 1)) {
                 return Err(InputError::InvalidLeapSecond);
             }
             Ok(Datetime {
                 tz: self,
-                stamp: time::Timespec {
-                    // This is actually 00:00:00. I cheated
-                    // when making time crate compute the
-                    // Tm (I used 59 instead of 60 seconds)
-                    // because I'm not sure whether the leap
-                    // second is well supported when converting
-                    // to Timespec.
-                    sec: stamp.sec + 1,
-                    nsec: stamp.nsec,
-                },
+                // The stamp actually corresponds to 00:00:00. I cheated
+                // when making tm_to_stamp compute the stamp (I used
+                // 59 instead of 60 seconds) because of the lack of
+                // leap second support in unix timestamp. We need to
+                // adjust now.
+                sec: sec + 1,
+                nano: nano,
                 is_60th_sec: true,
             })
         } else {
             Ok(Datetime {
                 tz: self,
-                stamp: stamp,
+                sec: sec,
+                nano: nano,
                 is_60th_sec: false,
             })
         }
@@ -361,15 +388,17 @@ impl Timezone {
 }
 
 impl GenericDay {
-    fn cmp_t(&self, tm: &time::Tm) -> Ordering {
+    fn cmp_t(&self, tm: &libc::tm) -> Ordering {
         const DAYS_MONTH: &'static [i32] = &[0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+        let tm_year = tm.tm_year + 1900;
+        let tm_mon = tm.tm_mon + 1;
 
-        let is_leap_year = (tm.tm_year % 4 == 0 && tm.tm_year % 100 != 0) || tm.tm_year % 400 == 0;
+        let is_leap_year = (tm_year % 4 == 0 && tm_year % 100 != 0) || tm_year % 400 == 0;
 
         match *self {
             GenericDay::Julian0 { jday } => jday.cmp(&tm.tm_yday),
             GenericDay::Julian1 { jday } => {
-                let yday = if is_leap_year && tm.tm_mon > 2 {
+                let yday = if is_leap_year && tm_mon > 2 {
                     tm.tm_yday
                 } else {
                     tm.tm_yday + 1
@@ -377,16 +406,16 @@ impl GenericDay {
                 jday.cmp(&yday)
             }
             GenericDay::MWDRule { month, week, wday } => {
-                if month < tm.tm_mon {
+                if month < tm_mon {
                     Ordering::Less
-                } else if month > tm.tm_mon {
+                } else if month > tm_mon {
                     Ordering::Greater
                 } else {
                     let wday_on_first = (tm.tm_wday - tm.tm_mday + 1 + 5 * 7) % 7;
-                    let days_in_month = if is_leap_year && tm.tm_mon == 2 {
+                    let days_in_month = if is_leap_year && tm_mon == 2 {
                         29
                     } else {
-                        DAYS_MONTH[tm.tm_mon as usize]
+                        DAYS_MONTH[tm_mon as usize]
                     };
 
                     let mut matching_week = 0;
@@ -421,14 +450,14 @@ impl GenericDay {
     }
 }
 
-impl PartialEq<time::Tm> for GenericDay {
-    fn eq(&self, tm: &time::Tm) -> bool {
+impl PartialEq<libc::tm> for GenericDay {
+    fn eq(&self, tm: &libc::tm) -> bool {
         self.cmp_t(tm) == Ordering::Equal
     }
 }
 
-impl PartialOrd<time::Tm> for GenericDay {
-    fn partial_cmp(&self, tm: &time::Tm) -> Option<Ordering> {
+impl PartialOrd<libc::tm> for GenericDay {
+    fn partial_cmp(&self, tm: &libc::tm) -> Option<Ordering> {
         Some(self.cmp_t(tm))
     }
 }
@@ -450,15 +479,11 @@ impl TransRule {
         match *self {
             TransRule::Fixed(ref t) => t,
             TransRule::Alternate { ref dst_start, dst_stime, ref dst_end, dst_etime, ref std, ref dst } => {
-                let mut std_t = time::at_utc(time::Timespec { sec: stamp + std.off as i64, nsec: 0 });
-                std_t.tm_year += 1900;
-                std_t.tm_mon += 1;
+                let std_t = stamp_to_tm(stamp + std.off as i64);
                 let std_sec = std_t.tm_hour * 3600 + std_t.tm_min * 60 + std_t.tm_sec;
 
                 // TODO: more efficient way to compute dst_t from std_t?
-                let mut dst_t = time::at_utc(time::Timespec { sec: stamp + dst.off as i64, nsec: 0 });
-                dst_t.tm_year += 1900;
-                dst_t.tm_mon += 1;
+                let dst_t = stamp_to_tm(stamp + dst.off as i64);
                 let dst_sec = dst_t.tm_hour * 3600 + dst_t.tm_min * 60 + dst_t.tm_sec;
 
                 if dst_start < dst_end {
@@ -514,7 +539,9 @@ pub struct Datetime<'a> {
     tz: &'a Timezone,
     /// The offset since Unix Epoch. This is *not* the number
     /// of SI seconds since Unix Epoch because of leap seconds.
-    stamp: time::Timespec,
+    sec: i64,
+    /// The nanosecond for the current second.
+    nano: i32,
     /// Remove ambiguous datetime on leap. When stamp
     /// corresponds to a leap second, use this field
     /// to know whether the `Datetime` corresponds to
@@ -527,25 +554,21 @@ impl<'a> Datetime<'a> {
     pub fn project<'b>(&self, tz: &'b Timezone) -> Datetime<'b> {
         Datetime {
             tz: tz,
-            stamp: self.stamp,
+            sec: self.sec,
+            nano: self.nano,
             is_60th_sec: self.is_60th_sec,
         }
     }
 
     /// Return the tm in the associated `Timezone`.
-    fn tm(&self) -> time::Tm {
-        let offset = self.tz.offset(self.stamp.sec).off;
-        let local = time::Timespec {
-            sec: self.stamp.sec + offset as i64 +
-                 if self.is_60th_sec {
-                -1
-            } else {
-                0
-            },
-            nsec: self.stamp.nsec,
-        };
-        let mut tm = time::at_utc(local);
-        tm.tm_utcoff = offset;
+    fn tm(&self) -> libc::tm {
+        let offset = self.tz.offset(self.sec).off;
+        let mut tm = stamp_to_tm(self.sec + offset as i64 +
+                                 if self.is_60th_sec {
+            -1
+        } else {
+            0
+        });
         if self.is_60th_sec {
             tm.tm_sec = 60;
         }
@@ -553,17 +576,17 @@ impl<'a> Datetime<'a> {
     }
 
     /// Convert a tm to date.
-    fn tm_to_date(tm: &time::Tm) -> (i32, i32, i32) {
+    fn tm_to_date(tm: &libc::tm) -> (i32, i32, i32) {
         (tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday)
     }
 
     /// Convert a tm to time.
-    fn tm_to_time(tm: &time::Tm) -> (i32, i32, i32, i32) {
-        (tm.tm_hour, tm.tm_min, tm.tm_sec, tm.tm_nsec)
+    fn tm_to_time(tm: &libc::tm) -> (i32, i32, i32) {
+        (tm.tm_hour, tm.tm_min, tm.tm_sec)
     }
 
     /// Convert a tm to weekday string.
-    fn tm_to_weekday(tm: &time::Tm) -> &'static str {
+    fn tm_to_weekday(tm: &libc::tm) -> &'static str {
         match tm.tm_wday {
             0 => "Sunday",
             1 => "Monday",
@@ -577,7 +600,7 @@ impl<'a> Datetime<'a> {
     }
 
     /// Convert a tm to a month string.
-    fn tm_to_month(tm: &time::Tm) -> &'static str {
+    fn tm_to_month(tm: &libc::tm) -> &'static str {
         match tm.tm_mon {
             0 => "January",
             1 => "February",
@@ -608,13 +631,14 @@ impl<'a> Datetime<'a> {
     /// the hour, minute, second and nanosecond in this order.
     pub fn time(&self) -> (i32, i32, i32, i32) {
         let tm = self.tm();
-        Self::tm_to_time(&tm)
+        let (h, m, s) = Self::tm_to_time(&tm);
+        (h, m, s, self.nano)
     }
 
     /// Return the unix timestamp. This is the number of unix seconds
     /// since 1970-01-01T00:00:00Z.
     pub fn unix(&self) -> i64 {
-        self.stamp.sec
+        self.sec
     }
 
     /// Format the `Datetime` according to the provided `format`.
@@ -650,7 +674,7 @@ impl<'a> Datetime<'a> {
         let tm = self.tm();
         let date = Self::tm_to_date(&tm);
         let time = Self::tm_to_time(&tm);
-        let off = self.tz.offset(self.stamp.sec);
+        let off = self.tz.offset(self.sec);
 
         let mut chars = fmt.chars();
         loop {
@@ -667,9 +691,9 @@ impl<'a> Datetime<'a> {
                         Some('H') => write!(out, "{:02}", time.0).unwrap_or(()),
                         Some('M') => write!(out, "{:02}", time.1).unwrap_or(()),
                         Some('S') => write!(out, "{:02}", time.2).unwrap_or(()),
-                        Some('3') => write!(out, "{:03}", time.3 / 1_000_000).unwrap_or(()),
-                        Some('6') => write!(out, "{:06}", time.3 / 1_000).unwrap_or(()),
-                        Some('9') => write!(out, "{:09}", time.3).unwrap_or(()),
+                        Some('3') => write!(out, "{:03}", self.nano / 1_000_000).unwrap_or(()),
+                        Some('6') => write!(out, "{:06}", self.nano / 1_000).unwrap_or(()),
+                        Some('9') => write!(out, "{:09}", self.nano).unwrap_or(()),
                         Some('x') => {
                             write!(out, "{:+03}:{:02}", off.off / 3600, off.off % 3600 / 60)
                                 .unwrap_or(())
@@ -718,14 +742,14 @@ impl<'a> Eq for Datetime<'a> {}
 
 impl<'a> PartialOrd<Datetime<'a>> for Datetime<'a> {
     fn partial_cmp(&self, other: &Datetime) -> Option<Ordering> {
-        let cmp_sec = self.stamp.sec.cmp(&other.stamp.sec);
+        let cmp_sec = self.sec.cmp(&other.sec);
         if let Ordering::Equal = cmp_sec {
             // Having the 60th sec tag means
             // that the time is Ordering::Less than
             // the other time.
             let cmp_leap = other.is_60th_sec.cmp(&self.is_60th_sec);
             if let Ordering::Equal = cmp_leap {
-                Some(self.stamp.nsec.cmp(&other.stamp.nsec))
+                Some(self.nano.cmp(&other.nano))
             } else {
                 Some(cmp_leap)
             }
@@ -748,21 +772,21 @@ impl<'a> Add<Deltatime> for Datetime<'a> {
             Delta::Nanoseconds(nano) => {
                 if nano < 0 {
                     let nano = -nano;
-                    if self.stamp.nsec as i64 >= nano {
-                        self.stamp.nsec -= nano as i32;
+                    if self.nano as i64 >= nano {
+                        self.nano -= nano as i32;
                         return self;
                     }
 
-                    let nano = nano - self.stamp.nsec as i64;
+                    let nano = nano - self.nano as i64;
                     let sec = nano / 1_000_000_000 + 1;
                     let nano_left = 1_000_000_000 - (nano - (sec - 1) * 1_000_000_000);
                     let mut t = self + Deltatime(Delta::Seconds(-sec));
-                    t.stamp.nsec = nano_left as i32;
+                    t.nano = nano_left as i32;
                     t
                 } else {
-                    let nano = nano + self.stamp.nsec as i64;
+                    let nano = nano + self.nano as i64;
                     if nano < 1_000_000_000 {
-                        self.stamp.nsec = nano as i32;
+                        self.nano = nano as i32;
                         return self;
                     }
 
@@ -773,7 +797,7 @@ impl<'a> Add<Deltatime> for Datetime<'a> {
                     let sec = nano / 1_000_000_000;
                     let nano = nano - sec * 1_000_000_000;
                     let mut t = self + Deltatime(Delta::Seconds(sec));
-                    t.stamp.nsec = nano as i32;
+                    t.nano = nano as i32;
                     t
                 }
             }
@@ -782,73 +806,73 @@ impl<'a> Add<Deltatime> for Datetime<'a> {
                 if sec < 0 {
                     sec = -sec;
                     while sec != 0 {
-                        match LEAP_SECONDS.binary_search(&self.stamp.sec) {
+                        match LEAP_SECONDS.binary_search(&self.sec) {
                             Err(0) => {
                                 // We won't encounter any leap second.
-                                self.stamp.sec -= sec;
+                                self.sec -= sec;
                                 return self;
-                            },
+                            }
                             Err(s) => {
-                                let prev_leap = LEAP_SECONDS[s-1];
-                                let prev_leap_in_sec = self.stamp.sec - prev_leap;
+                                let prev_leap = LEAP_SECONDS[s - 1];
+                                let prev_leap_in_sec = self.sec - prev_leap;
                                 if sec <= prev_leap_in_sec {
                                     // We're done before reaching the
                                     // previous leap second.
-                                    self.stamp.sec -= sec;
+                                    self.sec -= sec;
                                     return self;
                                 } else if sec == prev_leap_in_sec + 1 {
                                     // We've landed on the leap second.
                                     self.is_60th_sec = true;
-                                    self.stamp.sec = prev_leap;
+                                    self.sec = prev_leap;
                                     return self;
                                 } else {
                                     // We jump right before the leap second
                                     // while retaining 1 sec from the counter.
-                                    self.stamp.sec = prev_leap - 1;
+                                    self.sec = prev_leap - 1;
                                     sec -= prev_leap_in_sec + 2;
                                 }
-                            },
+                            }
                             Ok(_) => {
                                 // We start on an ambiguous unix timestamp.
                                 if self.is_60th_sec {
                                     self.is_60th_sec = false;
-                                    self.stamp.sec -= 1;
+                                    self.sec -= 1;
                                 } else {
                                     self.is_60th_sec = true;
                                 }
                                 sec -= 1;
-                            },
+                            }
                         }
                     }
                     self
                 } else {
                     while sec != 0 {
-                        match LEAP_SECONDS.binary_search(&self.stamp.sec) {
+                        match LEAP_SECONDS.binary_search(&self.sec) {
                             Err(s) if s == LEAP_SECONDS.len() => {
                                 // No leap seconds after current datetime.
                                 // So we can safely add all the second and
                                 // return the result.
-                                self.stamp.sec += sec;
+                                self.sec += sec;
                                 return self;
                             }
                             Err(s) => {
                                 let next_leap = LEAP_SECONDS[s];
-                                let next_leap_in_sec = next_leap - self.stamp.sec;
+                                let next_leap_in_sec = next_leap - self.sec;
                                 if sec < next_leap_in_sec {
                                     // We're done before even reaching the next
                                     // leap second.
-                                    self.stamp.sec += sec;
+                                    self.sec += sec;
                                     return self;
                                 } else if sec == next_leap_in_sec {
                                     // We've landed on the leap second.
-                                    self.stamp.sec = next_leap;
+                                    self.sec = next_leap;
                                     self.is_60th_sec = true;
                                     return self;
                                 } else {
                                     // Take into account the leap second
                                     // and countinue with whatever is left
                                     // of our second counter.
-                                    self.stamp.sec = next_leap;
+                                    self.sec = next_leap;
                                     sec -= next_leap_in_sec + 1;
                                 }
                             }
@@ -863,7 +887,7 @@ impl<'a> Add<Deltatime> for Datetime<'a> {
                                 if self.is_60th_sec {
                                     self.is_60th_sec = false;
                                 } else {
-                                    self.stamp.sec += 1;
+                                    self.sec += 1;
                                 }
                                 sec -= 1;
                             }
@@ -874,7 +898,7 @@ impl<'a> Add<Deltatime> for Datetime<'a> {
             }
             Delta::Days(day) => {
                 self.is_60th_sec = false;
-                self.stamp.sec += day * 86400;
+                self.sec += day * 86400;
                 self
             }
         }
@@ -896,8 +920,8 @@ impl<'a> Sub<Datetime<'a>> for Datetime<'a> {
         }
 
         // rhs <= self
-        let add_sec = match (LEAP_SECONDS.binary_search(&rhs.stamp.sec),
-                             LEAP_SECONDS.binary_search(&self.stamp.sec)) {
+        let add_sec = match (LEAP_SECONDS.binary_search(&rhs.sec),
+                             LEAP_SECONDS.binary_search(&self.sec)) {
             (Err(i), Err(j)) => (j - i) as i64,
             (Err(i), Ok(j)) => {
                 (j - i) as i64 +
@@ -929,14 +953,14 @@ impl<'a> Sub<Datetime<'a>> for Datetime<'a> {
                 }
             }
         };
-        Deltatime::nanoseconds((self.stamp.sec - rhs.stamp.sec + add_sec) * 1_000_000_000 +
-                               (self.stamp.nsec - rhs.stamp.nsec) as i64)
+        Deltatime::nanoseconds((self.sec - rhs.sec + add_sec) * 1_000_000_000 +
+                               (self.nano - rhs.nano) as i64)
     }
 }
 
 impl<'a> fmt::Debug for Datetime<'a> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        write!(fmt, "{}", self.tm().rfc3339())
+        write!(fmt, "{}", self.rfc3339())
     }
 }
 
@@ -1207,11 +1231,68 @@ impl Neg for Deltatime {
     }
 }
 
+// C bindings & conv helpers
+
+fn stamp_to_tm(sec: i64) -> libc::tm {
+    let mut tm = libc::tm {
+        tm_sec: 0,
+        tm_min: 0,
+        tm_hour: 0,
+        tm_mday: 0,
+        tm_mon: 0,
+        tm_year: 0,
+        tm_wday: 0,
+        tm_yday: 0,
+        tm_isdst: 0,
+        // Unused
+        tm_gmtoff: 0,
+        tm_zone: ptr::null(),
+    };
+    unsafe { libc::gmtime_r(&sec, &mut tm) };
+    tm
+}
+
+fn tm_to_stamp(tm: &libc::tm) -> i64 {
+    // Thanks to Eric S. Raymond for releasing this function into the
+    // public domain. I've tweaked it a bit but the algorithm's still
+    // the same. libc's mktime function interprets the input tm as local
+    // time, which is not what we want; timegm is not portable. The original
+    // version allowed month overflow; I removed this behavior.
+    const CUM_DAYS: &'static [i64; 12] = &[0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+
+    let year = 1900 + tm.tm_year as i64;
+    let mut result = (year - 1970) * 365 + CUM_DAYS[tm.tm_mon as usize];
+    result += (year - 1968) / 4;
+    result -= (year - 1900) / 100;
+    result += (year - 1600) / 400;
+    if ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0) && tm.tm_mon < 2 {
+        result -= 1;
+    }
+    result += tm.tm_mday as i64 - 1;
+    result *= 24;
+    result += tm.tm_hour as i64;
+    result *= 60;
+    result += tm.tm_min as i64;
+    result *= 60;
+    result += tm.tm_sec as i64;
+
+    result
+}
+
+
+extern "C" {
+    fn strptime(s: *const libc::c_char,
+                fmt: *const libc::c_char,
+                tm: *mut libc::tm)
+                -> *const libc::c_char;
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
-    use super::time;
+    use super::libc;
     use super::{GenericDay, Type, TransRule};
+    use super::{tm_to_stamp, stamp_to_tm};
 
     #[test]
     fn test_datetime() {
@@ -1219,12 +1300,8 @@ mod test {
         for &((y, m, d, h, mi, s, n), stamp) in &[((1970, 1, 1, 0, 0, 0, 0), 0),
                                                   ((1970, 1, 1, 1, 0, 0, 0), 3600),
                                                   ((2016, 1, 1, 0, 0, 0, 0), 1451606400)] {
-            let stamp = time::Timespec {
-                sec: stamp,
-                nsec: 0,
-            };
             let dt = utc.datetime(y, m, d, h, mi, s, n).unwrap();
-            assert_eq!(dt.stamp, stamp);
+            assert_eq!(dt.sec, stamp);
             assert_eq!(dt.is_60th_sec, false);
         }
     }
@@ -1236,7 +1313,7 @@ mod test {
         let t_leap = utc.datetime(2015, 6, 30, 23, 59, 60, 0).unwrap();
         assert_eq!(t.is_60th_sec, false);
         assert_eq!(t_leap.is_60th_sec, true);
-        assert_eq!(t.stamp.sec + 1, t_leap.stamp.sec);
+        assert_eq!(t.sec + 1, t_leap.sec);
         assert_eq!(t_leap.format("%S").unwrap(), "60");
         assert_eq!(t_leap.date(), (2015, 6, 30));
         assert_eq!(t_leap.time(), (23, 59, 60, 0));
@@ -1299,8 +1376,8 @@ mod test {
 
     #[test]
     fn test_generic_day() {
-        fn t(y: i32, m: i32, d: i32) -> time::Tm {
-            let tm = time::Tm {
+        fn t(y: i32, m: i32, d: i32) -> libc::tm {
+            let tm = libc::tm {
                 tm_sec: 0,
                 tm_min: 0,
                 tm_hour: 0,
@@ -1310,74 +1387,79 @@ mod test {
                 tm_wday: 0,
                 tm_yday: 0,
                 tm_isdst: 0,
-                tm_utcoff: 0,
-                tm_nsec: 0,
+                tm_gmtoff: 0,
+                tm_zone: ::std::ptr::null(),
             };
-            // Trick to let time lib compute tm_wday.
-            let t = tm.to_timespec();
-            let mut tm = time::at_utc(t);
-            tm.tm_year += 1900;
-            tm.tm_mon += 1;
-            tm
+            // Make libc compute tm_wday.
+            let stamp = tm_to_stamp(&tm);
+            stamp_to_tm(stamp)
         }
 
-        assert_eq!(GenericDay::Julian1 { jday: 59 }, t(2016, 2, 28));
-        assert_eq!(GenericDay::Julian1 { jday: 60 }, t(2016, 3, 1));
-        assert_eq!(GenericDay::Julian1 { jday: 365 }, t(2016, 12, 31));
-        assert_eq!(GenericDay::Julian1 { jday: 59 }, t(2015, 2, 28));
-        assert_eq!(GenericDay::Julian1 { jday: 60 }, t(2015, 3, 1));
-        assert_eq!(GenericDay::Julian1 { jday: 365 }, t(2015, 12, 31));
+        for &(ref gen, ref tm) in &[(GenericDay::Julian1 { jday: 59 }, t(2016, 2, 28)),
+                                    (GenericDay::Julian1 { jday: 60 }, t(2016, 3, 1)),
+                                    (GenericDay::Julian1 { jday: 365 }, t(2016, 12, 31)),
+                                    (GenericDay::Julian1 { jday: 59 }, t(2015, 2, 28)),
+                                    (GenericDay::Julian1 { jday: 60 }, t(2015, 3, 1)),
+                                    (GenericDay::Julian1 { jday: 365 }, t(2015, 12, 31)),
 
-        assert_eq!(GenericDay::Julian0 { jday: 58 }, t(2016, 2, 28));
-        assert_eq!(GenericDay::Julian0 { jday: 59 }, t(2016, 2, 29));
-        assert_eq!(GenericDay::Julian0 { jday: 60 }, t(2016, 3, 1));
-        assert_eq!(GenericDay::Julian0 { jday: 365 }, t(2016, 12, 31));
-        assert_eq!(GenericDay::Julian0 { jday: 58 }, t(2015, 2, 28));
-        assert_eq!(GenericDay::Julian0 { jday: 59 }, t(2015, 3, 1));
-        assert_eq!(GenericDay::Julian0 { jday: 364 }, t(2015, 12, 31));
+                                    (GenericDay::Julian0 { jday: 58 }, t(2016, 2, 28)),
+                                    (GenericDay::Julian0 { jday: 59 }, t(2016, 2, 29)),
+                                    (GenericDay::Julian0 { jday: 60 }, t(2016, 3, 1)),
+                                    (GenericDay::Julian0 { jday: 365 }, t(2016, 12, 31)),
+                                    (GenericDay::Julian0 { jday: 58 }, t(2015, 2, 28)),
+                                    (GenericDay::Julian0 { jday: 59 }, t(2015, 3, 1)),
+                                    (GenericDay::Julian0 { jday: 364 }, t(2015, 12, 31)),
 
-        assert_eq!(GenericDay::MWDRule {
-                       month: 1,
-                       week: 1,
-                       wday: 0,
-                   },
-                   t(2016, 1, 3));
-        assert_eq!(GenericDay::MWDRule {
-                       month: 1,
-                       week: 2,
-                       wday: 0,
-                   },
-                   t(2016, 1, 10));
-        assert_eq!(GenericDay::MWDRule {
-                       month: 1,
-                       week: 5,
-                       wday: 0,
-                   },
-                   t(2016, 1, 31));
-        assert_eq!(GenericDay::MWDRule {
-                       month: 1,
-                       week: 1,
-                       wday: 5,
-                   },
-                   t(2016, 1, 1));
-        assert_eq!(GenericDay::MWDRule {
-                       month: 1,
-                       week: 5,
-                       wday: 4,
-                   },
-                   t(2016, 1, 28));
-        assert_eq!(GenericDay::MWDRule {
-                       month: 1,
-                       week: 4,
-                       wday: 4,
-                   },
-                   t(2016, 1, 28));
+                                    (GenericDay::MWDRule {
+                                        month: 1,
+                                        week: 1,
+                                        wday: 0,
+                                    },
+                                     t(2016, 1, 3)),
+                                    (GenericDay::MWDRule {
+                                        month: 1,
+                                        week: 2,
+                                        wday: 0,
+                                    },
+                                     t(2016, 1, 10)),
+                                    (GenericDay::MWDRule {
+                                        month: 1,
+                                        week: 5,
+                                        wday: 0,
+                                    },
+                                     t(2016, 1, 31)),
+                                    (GenericDay::MWDRule {
+                                        month: 1,
+                                        week: 1,
+                                        wday: 5,
+                                    },
+                                     t(2016, 1, 1)),
+                                    (GenericDay::MWDRule {
+                                        month: 1,
+                                        week: 5,
+                                        wday: 4,
+                                    },
+                                     t(2016, 1, 28)),
+                                    (GenericDay::MWDRule {
+                                        month: 1,
+                                        week: 4,
+                                        wday: 4,
+                                    },
+                                     t(2016, 1, 28))] {
+            if gen != tm {
+                panic!("{:?} != {:04}-{:02}-{:02}",
+                       gen,
+                       tm.tm_year,
+                       tm.tm_mon,
+                       tm.tm_mday);
+            }
+        }
     }
 
     #[test]
     fn test_trans_rule() {
         fn s(y: i32, mo: i32, d: i32, h: i32, m: i32, s: i32) -> i64 {
-            let tm = time::Tm {
+            let tm = libc::tm {
                 tm_sec: s,
                 tm_min: m,
                 tm_hour: h,
@@ -1387,10 +1469,10 @@ mod test {
                 tm_wday: 0,
                 tm_yday: 0,
                 tm_isdst: 0,
-                tm_utcoff: 0,
-                tm_nsec: 0,
+                tm_gmtoff: 0,
+                tm_zone: ::std::ptr::null(),
             };
-            tm.to_timespec().sec
+            tm_to_stamp(&tm)
         }
 
         // Fixed offset rule. easy.
