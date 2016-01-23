@@ -49,7 +49,7 @@ let utc = Timezone::utc();
 let paris = Timezone::new("Europe/Paris").unwrap();
 
 // Create a `Datetime` corresponding to midnight in Paris timezone...
-let t = paris.datetime(2015, 12, 25, 0, 0, 0, 0);
+let t = paris.datetime(2015, 12, 25, 0, 0, 0, 0).unwrap();
 // ... and project it into UTC timezone.
 let t_utc = t.project(&utc);
 assert_eq!(t_utc.date(), (2015, 12, 24));
@@ -63,7 +63,7 @@ are available when handling `Deltatime` and will yield different results:
 use hourglass::{Timezone, Deltatime};
 
 let utc = Timezone::utc();
-let t = utc.datetime(2015, 6, 30, 0, 0, 0, 0);
+let t = utc.datetime(2015, 6, 30, 0, 0, 0, 0).unwrap();
 let t_plus_1_day = t + Deltatime::days(1);
 let t_plus_86400_sec = t + Deltatime::seconds(86400);
 
@@ -79,8 +79,8 @@ Two `Datetime` can also be compared:
 use hourglass::{Timezone, Deltatime};
 
 let utc = Timezone::utc();
-let t0 = utc.datetime(2015, 6, 30, 0, 0, 0, 0);
-let t1 = utc.datetime(2015, 7, 1, 0, 0, 0, 0);
+let t0 = utc.datetime(2015, 6, 30, 0, 0, 0, 0).unwrap();
+let t1 = utc.datetime(2015, 7, 1, 0, 0, 0, 0).unwrap();
 
 assert_eq!(t0 < t1, true);
 assert_eq!(t0 >= t1, false);
