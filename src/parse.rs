@@ -1,14 +1,14 @@
 extern crate byteorder;
-extern crate regex;
 
 use super::{Type, Timezone, Transition, TransRule, GenericDay};
+use super::nom::{digit, alpha, eof, IResult};
 
 use std::rc::Rc;
 use std::io::{self, Read, BufReader, Seek, SeekFrom};
 use std::fs::File;
 use std::path::PathBuf;
 use self::byteorder::{BigEndian, ByteOrder};
-use std::str;
+use std::str::{self, FromStr};
 
 macro_rules! e_invalid {
     ($($arg:tt)*) => {
@@ -192,107 +192,187 @@ fn parse_posix_tz<R: io::Read>(mut r: R) -> io::Result<TransRule> {
     let mut s = String::new();
     try!(r.read_to_string(&mut s));
 
-    // This f**king format... sorry for the regex.
-    // std offset[dst[offset][,start[/time],end[/time]]]
-    let re = regex::Regex::new("^\\n(?P<std>[A-Z]{3,})(?P<stdoff>[+-]?[0-9]+(:[0-9]+(:\
-                                [0-9]+)?)?)((?P<dst>[A-Z]{3,})(?P<dstoff>[+-]?[0-9]+(:[0-9]+(:\
-                                [0-9]+)?)?)?)?(,(?P<start>J[0-9]{1,3}|[0-9]{1,3}|M[0-9]{1,2}[.\
-                                ][0-9][.][0-9])(/(?P<stime>[0-9]{1,2}(:[0-9]{1,2}(:[0-9]{1,\
-                                2})?)?))?,(?P<end>J[0-9]{1,3}|[0-9]{1,3}|M[0-9]{1,2}[.][0-9][.\
-                                ][0-9])(/(?P<etime>[0-9]{1,2}(:[0-9]{1,2}(:[0-9]{1,\
-                                2})?)?))?)?\\n$")
-                 .unwrap();
-    let caps = match re.captures(&s[..]) {
-        None => return invalid!("invalid POSIX TZ format: {}", s.replace("\n", "<LF>")),
-        Some(caps) => caps,
-    };
+    if !s.starts_with('\n') || !s.ends_with('\n') {
+        return invalid!("expected a posix tz line");
+    }
 
-    let std_abbr = match caps.name("std") {
-        None => return invalid!("missing mandatory std abbreviation"),
-        Some(s) => s,
-    };
-    let std_off = match caps.name("stdoff") {
-        None => return invalid!("missing mandatory std offset"),
-        Some(o) => hhmmss_to_sec(o),
-    };
-
-    let ext = match caps.name("dst") {
-        None => {
-            TransRule::Fixed(Type {
-                off: -std_off,
-                is_dst: false,
-                abbr: std_abbr.to_owned(),
-            })
-        }
-        Some(dst_abbr) => {
-            let dst_off = match caps.name("dstoff") {
-                None => std_off - 3600,
-                Some(o) => hhmmss_to_sec(o),
-            };
-            let start = transition_day(caps.name("start").unwrap());
-            let start_time = hhmmss_to_sec(match caps.name("stime") {
-                None => "02:00:00",
-                Some(t) => t,
-            });
-            let end = transition_day(caps.name("end").unwrap());
-            let end_time = hhmmss_to_sec(match caps.name("etime") {
-                None => "02:00:00",
-                Some(t) => t,
-            });
-
-            TransRule::Alternate {
-                dst_start: start,
-                dst_stime: start_time,
-                dst_end: end,
-                dst_etime: end_time,
-                std: Type {
-                    off: -std_off,
-                    is_dst: false,
-                    abbr: std_abbr.to_owned(),
-                },
-                dst: Type {
-                    off: -dst_off,
-                    is_dst: true,
-                    abbr: dst_abbr.to_owned(),
-                },
-            }
-        }
-    };
-
-    Ok(ext)
-}
-
-fn hhmmss_to_sec(s: &str) -> i32 {
-    // [+-]?hh[:mm[:ss]]
-    let re = regex::Regex::new("^(?P<hour>[+-]?[0-9]{1,2})(:(?P<minute>[0-9]{1,2})(:\
-                                (?P<second>[0-9]{1,2}))?)?$")
-                 .unwrap();
-
-    // We can unwrap because the syntax has been verified by the regex.
-    let caps = re.captures(&s[..]).unwrap();
-    let hour = caps.name("hour").unwrap().parse::<i32>().unwrap();
-    let minute = caps.name("minute").unwrap_or("0").parse::<i32>().unwrap();
-    let second = caps.name("second").unwrap_or("0").parse::<i32>().unwrap();
-    hour * 3600 + minute * 60 + second
-}
-
-fn transition_day(s: &str) -> GenericDay {
-    // Unwrapping is safe because the syntax has been verified by the caller.
-    match s.chars().next().unwrap() {
-        'J' => GenericDay::Julian1 { jday: (&s[1..]).parse::<i32>().unwrap() },
-        'M' => {
-            let mut comp = (&s[1..]).split('.');
-            GenericDay::MWDRule {
-                month: comp.next().unwrap().parse::<i32>().unwrap(),
-                week: comp.next().unwrap().parse::<i32>().unwrap(),
-                wday: comp.next().unwrap().parse::<i32>().unwrap(),
-            }
-        }
-        _ => GenericDay::Julian0 { jday: s.parse::<i32>().unwrap() },
+    match posixtz(s.trim()) {
+        IResult::Done(_, t) => Ok(t),
+        IResult::Error(_) => invalid!("invalid posix tz"),
+        IResult::Incomplete(_) => invalid!("invalid posix tz"),
     }
 }
 
 fn skip<R: io::Seek>(mut r: R, len: i32) -> io::Result<()> {
     try!(r.seek(SeekFrom::Current(len as i64)));
     Ok(())
+}
+
+// Match an ascii number and convert it to an i32.
+named!(num<&str, i32>, map_res!(digit, FromStr::from_str));
+
+// Match "hh[:mm[:ss]]" and returns the number of seconds.
+named!(hhmmss<&str, i32>,
+    chain!(
+        hour: num ~
+        sec: opt!(complete!(chain!(
+            tag_s!(":") ~
+            min: num ~
+            sec: opt!(complete!(chain!(
+                tag_s!(":") ~
+                sec: num,
+                || { sec }
+            ))),
+            || { min * 60 + sec.unwrap_or(0) }
+        ))),
+        || { hour * 3600 + sec.unwrap_or(0) }
+    )
+);
+
+// Match "[+-]hh[:mm[:ss]]" and returns the number of seconds.
+named!(signed_hhmmss<&str, i32>, chain!(
+    sign: chain!(
+        s: alt!(tag_s!("+") | tag_s!("-"))?,
+        || { if let Some("-") = s { -1 } else { 1 } }
+    ) ~
+    sec: hhmmss,
+    || { sign * sec }
+));
+
+
+// Match a generic day definition "Jn", "n" or "Mm.w.d".
+named!(genday<&str, GenericDay>,
+    alt!(
+        chain!(
+            tag_s!("J") ~
+            j: num,
+            || { GenericDay::Julian1 { jday: j } }
+        ) |
+        chain!(
+            tag_s!("M") ~
+            m: num ~
+            tag_s!(".") ~
+            w: num ~
+            tag_s!(".") ~
+            d: num,
+            || { GenericDay::MWDRule { month: m, week: w, wday: d } }
+        ) |
+        num => { |j| { GenericDay::Julian0 { jday: j } } }
+    )
+);
+
+// Match a POSIX TZ definition "std offset[dst[offset][,start[/time],end[/time]]]"
+named!(posixtz<&str, TransRule>, alt!(
+    chain!(
+        std_abbr: alpha ~
+        std_off: signed_hhmmss ~
+        eof,
+        || {
+            TransRule::Fixed(
+                Type{
+                    off: -std_off,
+                    is_dst: false,
+                    abbr: std_abbr.to_owned(),
+                }
+            )
+        }
+    ) |
+    chain!(
+        std_abbr: alpha ~
+        std_off: signed_hhmmss ~
+        dst_abbr: alpha ~
+        dst_off: opt!(complete!(signed_hhmmss)) ~
+        tag_s!(",") ~
+        dst_start: genday ~
+        dst_stime: opt!(complete!(preceded!(tag_s!("/"), hhmmss))) ~
+        tag_s!(",") ~
+        dst_end: genday ~
+        dst_etime: opt!(complete!(preceded!(tag_s!("/"), hhmmss))) ~
+        eof,
+        || {
+            TransRule::Alternate {
+                dst_start: dst_start,
+                dst_stime: dst_stime.unwrap_or(2 * 3600),
+                dst_end: dst_end,
+                dst_etime: dst_etime.unwrap_or(2 * 3600),
+                std: Type {
+                    off: -std_off,
+                    is_dst: false,
+                    abbr: std_abbr.to_owned(),
+                },
+                dst: Type {
+                    off: -dst_off.unwrap_or(std_off - 3600),
+                    is_dst: true,
+                    abbr: dst_abbr.to_owned(),
+                },
+            }
+        }
+    )
+));
+
+#[cfg(test)]
+mod test {
+    use super::super::{TransRule, GenericDay, Type};
+    use super::super::nom;
+    use super::posixtz;
+
+    #[test]
+    fn test_posixtz() {
+        fn mwd(m: i32, w: i32, d: i32) -> GenericDay {
+            GenericDay::MWDRule {
+                month: m,
+                week: w,
+                wday: d,
+            }
+        }
+        fn std(off_h: i32, abbr: &str) -> Type {
+            Type {
+                off: off_h * 3600,
+                is_dst: false,
+                abbr: abbr.to_owned(),
+            }
+        }
+        fn dst(off_h: i32, abbr: &str) -> Type {
+            Type {
+                off: off_h * 3600,
+                is_dst: true,
+                abbr: abbr.to_owned(),
+            }
+        }
+
+        for &(sample, ref expected) in &[("AEST-10AEDT,M10.1.0,M4.1.0/3",
+                                     TransRule::Alternate {
+                                        dst_start: mwd(10, 1, 0),
+                                        dst_stime: 2 * 3600,
+                                        dst_end: mwd(4, 1, 0),
+                                        dst_etime: 3 * 3600,
+                                        std: std(10, "AEST"),
+                                        dst: dst(11, "AEDT"),
+                                    }),
+                                    ("CST6CDT,M4.1.0,M10.5.0",
+                                     TransRule::Alternate {
+                                        dst_start: mwd(4, 1, 0),
+                                        dst_stime: 2 * 3600,
+                                        dst_end: mwd(10, 5, 0),
+                                        dst_etime: 2 * 3600,
+                                        std: std(-6, "CST"),
+                                        dst: dst(-5, "CDT"),
+                                    }),
+                                    ("MSK-3", TransRule::Fixed(std(3, "MSK"))),
+                                    ("ART3", TransRule::Fixed(std(-3, "ART"))),
+                                    ("WET0WEST,M3.5.0/1,M10.5.0",
+                                     TransRule::Alternate {
+                                        dst_start: mwd(3, 5, 0),
+                                        dst_stime: 1 * 3600,
+                                        dst_end: mwd(10, 5, 0),
+                                        dst_etime: 2 * 3600,
+                                        std: std(0, "WET"),
+                                        dst: dst(1, "WEST"),
+                                    })] {
+            match posixtz(sample) {
+                nom::IResult::Done(_, ref r) if *r == *expected => (),
+                _ => panic!("{} != {:?}", sample, expected),
+            }
+        }
+    }
 }

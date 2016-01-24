@@ -80,6 +80,9 @@
 //! assert_eq!(t1 == t1, true);
 //! assert_eq!(t1 - t0, Deltatime::seconds(86401));
 //! ```
+
+#[macro_use]
+extern crate nom;
 extern crate libc;
 
 mod parse;
