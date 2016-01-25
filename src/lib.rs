@@ -128,7 +128,7 @@ struct Transition {
     ttype: Rc<Type>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 enum TransRule {
     Fixed(Type),
     Alternate {
@@ -141,7 +141,7 @@ enum TransRule {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 enum GenericDay {
     Julian0 {
         jday: i32,
@@ -462,18 +462,6 @@ impl PartialOrd<libc::tm> for GenericDay {
     }
 }
 
-impl PartialEq<GenericDay> for GenericDay {
-    fn eq(&self, other: &GenericDay) -> bool {
-        self.cmp(other) == Ordering::Equal
-    }
-}
-
-impl PartialOrd<GenericDay> for GenericDay {
-    fn partial_cmp(&self, other: &GenericDay) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
 impl TransRule {
     fn get_type(&self, stamp: i64) -> &Type {
         match *self {
@@ -486,7 +474,7 @@ impl TransRule {
                 let dst_t = stamp_to_tm(stamp + dst.off as i64);
                 let dst_sec = dst_t.tm_hour * 3600 + dst_t.tm_min * 60 + dst_t.tm_sec;
 
-                if dst_start < dst_end {
+                if dst_start.cmp(&dst_end) == Ordering::Less {
                     match (dst_start.cmp_t(&std_t), dst_stime.cmp(&std_sec)) {
                         (Ordering::Greater, _) => std,
                         (Ordering::Equal, Ordering::Greater) => std,
