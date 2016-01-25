@@ -167,13 +167,13 @@ impl Timezone {
     /// Try to load a new `Timezone`.
     /// It assumes that the zoneinfo data are located
     /// under `/usr/share/zoneinfo`.
-    pub fn new(timezone: &str) -> io::Result<Self> {
+    pub fn new(timezone: &str) -> Result<Self, TzError> {
         parse::load_timezone(timezone)
     }
 
     /// Load the local `Timezone` set by the system,
     /// disregarding the `TZ` environment variable.
-    pub fn local() -> io::Result<Self> {
+    pub fn local() -> Result<Self, TzError> {
         parse::load_timezone("localtime")
     }
 
@@ -949,6 +949,45 @@ impl<'a> Sub<Datetime<'a>> for Datetime<'a> {
 impl<'a> fmt::Debug for Datetime<'a> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         write!(fmt, "{}", self.rfc3339())
+    }
+}
+
+/// Possible errors when creating a `Timezone`.
+pub enum TzError {
+    IOError(io::Error),
+    InvalidTzFile,
+    InvalidPosixTz,
+    UnsupportedTzFile,
+}
+
+impl fmt::Debug for TzError {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        use std::error::Error;
+        write!(fmt, "{}", self.description())
+    }
+}
+
+impl fmt::Display for TzError {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        use std::error::Error;
+        write!(fmt, "{}", self.description())
+    }
+}
+
+impl error::Error for TzError {
+    fn description(&self) -> &str {
+        match *self {
+            TzError::IOError(_) => "io error",
+            TzError::InvalidTzFile => "invalid TZ file",
+            TzError::InvalidPosixTz => "invalid POSIX TZ",
+            TzError::UnsupportedTzFile => "unsupported TZ file",
+        }
+    }
+}
+
+impl std::convert::From<io::Error> for TzError {
+    fn from(e: io::Error) -> Self {
+        TzError::IOError(e)
     }
 }
 

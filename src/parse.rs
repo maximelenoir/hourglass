@@ -1,6 +1,6 @@
 extern crate byteorder;
 
-use super::{Type, Timezone, Transition, TransRule, GenericDay};
+use super::{Type, Timezone, Transition, TransRule, GenericDay, TzError};
 use super::nom::{digit, alpha, eof, IResult};
 
 use std::rc::Rc;
@@ -10,18 +10,7 @@ use std::path::PathBuf;
 use self::byteorder::{BigEndian, ByteOrder};
 use std::str::{self, FromStr};
 
-macro_rules! e_invalid {
-    ($($arg:tt)*) => {
-        io::Error::new(io::ErrorKind::InvalidData, format!($($arg)*))
-    }
-}
-macro_rules! invalid {
-    ($($arg:tt)*) => {
-        Err(e_invalid!($($arg)*))
-    }
-}
-
-pub fn load_timezone(timezone: &str) -> io::Result<Timezone> {
+pub fn load_timezone(timezone: &str) -> Result<Timezone, TzError> {
     let mut filename = PathBuf::from("/usr/share/zoneinfo");
     filename.push(timezone);
     let filename = filename.as_path();
@@ -49,7 +38,7 @@ pub fn load_timezone(timezone: &str) -> io::Result<Timezone> {
             // Parse the second header.
             let hdr = try!(parse_header(&mut r));
             if hdr.version != 2 {
-                return invalid!("expected TZfile2");
+                return Err(TzError::InvalidTzFile);
             }
 
             // Parse the v2 data.
@@ -103,21 +92,19 @@ struct Header {
     abbr_size: i32,
 }
 
-fn parse_header<R: io::Read>(mut r: R) -> io::Result<Header> {
+fn parse_header<R: io::Read>(mut r: R) -> Result<Header, TzError> {
     let mut buff = [0u8; 44];
     try!(r.read_exact(&mut buff[..]));
 
     match str::from_utf8(&buff[..4]) {
         Ok("TZif") => (),
-        Ok(_) => return invalid!("not a TZfile"),
-        Err(_) => return invalid!("garbage file header"),
+        _ => return Err(TzError::InvalidTzFile),
     }
 
     let version = match buff[4] {
         0x00 => 1,
         0x32 => 2,
-        0x33 => return invalid!("version 3 is not supported"),
-        v => return invalid!("unknown version {:X}", v),
+        _ => return Err(TzError::UnsupportedTzFile),
     };
 
     Ok(Header {
@@ -131,7 +118,7 @@ fn parse_header<R: io::Read>(mut r: R) -> io::Result<Header> {
     })
 }
 
-fn parse_trans_32<R: io::Read>(mut r: R, n: i32) -> io::Result<Vec<i64>> {
+fn parse_trans_32<R: io::Read>(mut r: R, n: i32) -> Result<Vec<i64>, TzError> {
     let mut trans = Vec::with_capacity(n as usize);
     let mut buff = [0u8; 4];
     for _ in 0..n {
@@ -142,7 +129,7 @@ fn parse_trans_32<R: io::Read>(mut r: R, n: i32) -> io::Result<Vec<i64>> {
     Ok(trans)
 }
 
-fn parse_trans_64<R: io::Read>(mut r: R, n: i32) -> io::Result<Vec<i64>> {
+fn parse_trans_64<R: io::Read>(mut r: R, n: i32) -> Result<Vec<i64>, TzError> {
     let mut trans = Vec::with_capacity(n as usize);
     let mut buff = [0u8; 8];
     for _ in 0..n {
@@ -153,13 +140,13 @@ fn parse_trans_64<R: io::Read>(mut r: R, n: i32) -> io::Result<Vec<i64>> {
     Ok(trans)
 }
 
-fn parse_type_idx<R: io::Read>(mut r: R, n: i32) -> io::Result<Vec<u8>> {
+fn parse_type_idx<R: io::Read>(mut r: R, n: i32) -> Result<Vec<u8>, TzError> {
     let mut idx = vec![0u8; n as usize];
     try!(r.read_exact(&mut idx[..]));
     Ok(idx)
 }
 
-fn parse_types<R: io::Read>(mut r: R, n: i32) -> io::Result<Vec<(i32, bool, u8)>> {
+fn parse_types<R: io::Read>(mut r: R, n: i32) -> Result<Vec<(i32, bool, u8)>, TzError> {
     let mut types = Vec::with_capacity(n as usize);
     let mut buff = [0u8; 6];
     for _ in 0..n {
@@ -169,7 +156,7 @@ fn parse_types<R: io::Read>(mut r: R, n: i32) -> io::Result<Vec<(i32, bool, u8)>
     Ok(types)
 }
 
-fn parse_abbrs<R: io::Read>(mut r: R, len: i32) -> io::Result<Vec<(u8, String)>> {
+fn parse_abbrs<R: io::Read>(mut r: R, len: i32) -> Result<Vec<(u8, String)>, TzError> {
     let mut buff = vec![0u8; len as usize];
     try!(r.read_exact(&mut buff[..]));
 
@@ -178,7 +165,7 @@ fn parse_abbrs<R: io::Read>(mut r: R, len: i32) -> io::Result<Vec<(u8, String)>>
     for (i, _) in buff.iter().enumerate().filter(|&(_, &c)| c == 0) {
         let abbr = (&buff[idx..i]).to_owned();
         let abbr = match String::from_utf8(abbr) {
-            Err(e) => return invalid!("invalid abbrevation: {}", e),
+            Err(_) => return Err(TzError::InvalidTzFile),
             Ok(a) => a,
         };
         abbrs.push((idx as u8, abbr));
@@ -188,22 +175,22 @@ fn parse_abbrs<R: io::Read>(mut r: R, len: i32) -> io::Result<Vec<(u8, String)>>
     Ok(abbrs)
 }
 
-fn parse_posix_tz<R: io::Read>(mut r: R) -> io::Result<TransRule> {
+fn parse_posix_tz<R: io::Read>(mut r: R) -> Result<TransRule, TzError> {
     let mut s = String::new();
     try!(r.read_to_string(&mut s));
 
     if !s.starts_with('\n') || !s.ends_with('\n') {
-        return invalid!("expected a posix tz line");
+        return Err(TzError::InvalidTzFile);
     }
 
     match posixtz(s.trim()) {
         IResult::Done(_, t) => Ok(t),
-        IResult::Error(_) => invalid!("invalid posix tz"),
-        IResult::Incomplete(_) => invalid!("invalid posix tz"),
+        IResult::Error(_) => Err(TzError::InvalidPosixTz),
+        IResult::Incomplete(_) => Err(TzError::InvalidPosixTz),
     }
 }
 
-fn skip<R: io::Seek>(mut r: R, len: i32) -> io::Result<()> {
+fn skip<R: io::Seek>(mut r: R, len: i32) -> Result<(), TzError> {
     try!(r.seek(SeekFrom::Current(len as i64)));
     Ok(())
 }
