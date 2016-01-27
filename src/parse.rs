@@ -1,14 +1,14 @@
 extern crate byteorder;
 
-use super::{Type, Timezone, Transition, TransRule, GenericDay, TzError};
-use super::nom::{digit, alpha, eof, IResult};
+use super::{Type, Timezone, Transition, TransRule, TzError, posixtz};
+use super::nom::IResult;
 
 use std::rc::Rc;
 use std::io::{self, Read, BufReader, Seek, SeekFrom};
 use std::fs::File;
 use std::path::PathBuf;
 use self::byteorder::{BigEndian, ByteOrder};
-use std::str::{self, FromStr};
+use std::str;
 
 pub fn load_timezone(timezone: &str) -> Result<Timezone, TzError> {
     let mut filename = PathBuf::from("/usr/share/zoneinfo");
@@ -193,173 +193,4 @@ fn parse_posix_tz<R: io::Read>(mut r: R) -> Result<TransRule, TzError> {
 fn skip<R: io::Seek>(mut r: R, len: i32) -> Result<(), TzError> {
     try!(r.seek(SeekFrom::Current(len as i64)));
     Ok(())
-}
-
-// Match an ascii number and convert it to an i32.
-named!(num<&str, i32>, map_res!(digit, FromStr::from_str));
-
-// Match "hh[:mm[:ss]]" and returns the number of seconds.
-named!(hhmmss<&str, i32>,
-    chain!(
-        hour: num ~
-        sec: opt!(complete!(chain!(
-            tag_s!(":") ~
-            min: num ~
-            sec: opt!(complete!(chain!(
-                tag_s!(":") ~
-                sec: num,
-                || { sec }
-            ))),
-            || { min * 60 + sec.unwrap_or(0) }
-        ))),
-        || { hour * 3600 + sec.unwrap_or(0) }
-    )
-);
-
-// Match "[+-]hh[:mm[:ss]]" and returns the number of seconds.
-named!(signed_hhmmss<&str, i32>, chain!(
-    sign: chain!(
-        s: alt!(tag_s!("+") | tag_s!("-"))?,
-        || { if let Some("-") = s { -1 } else { 1 } }
-    ) ~
-    sec: hhmmss,
-    || { sign * sec }
-));
-
-
-// Match a generic day definition "Jn", "n" or "Mm.w.d".
-named!(genday<&str, GenericDay>,
-    alt!(
-        chain!(
-            tag_s!("J") ~
-            j: num,
-            || { GenericDay::Julian1 { jday: j } }
-        ) |
-        chain!(
-            tag_s!("M") ~
-            m: num ~
-            tag_s!(".") ~
-            w: num ~
-            tag_s!(".") ~
-            d: num,
-            || { GenericDay::MWDRule { month: m, week: w, wday: d } }
-        ) |
-        num => { |j| { GenericDay::Julian0 { jday: j } } }
-    )
-);
-
-// Match a POSIX TZ definition "std offset[dst[offset][,start[/time],end[/time]]]"
-named!(posixtz<&str, TransRule>, alt!(
-    chain!(
-        std_abbr: alpha ~
-        std_off: signed_hhmmss ~
-        eof,
-        || {
-            TransRule::Fixed(
-                Type{
-                    off: -std_off,
-                    is_dst: false,
-                    abbr: std_abbr.to_owned(),
-                }
-            )
-        }
-    ) |
-    chain!(
-        std_abbr: alpha ~
-        std_off: signed_hhmmss ~
-        dst_abbr: alpha ~
-        dst_off: opt!(complete!(signed_hhmmss)) ~
-        tag_s!(",") ~
-        dst_start: genday ~
-        dst_stime: opt!(complete!(preceded!(tag_s!("/"), hhmmss))) ~
-        tag_s!(",") ~
-        dst_end: genday ~
-        dst_etime: opt!(complete!(preceded!(tag_s!("/"), hhmmss))) ~
-        eof,
-        || {
-            TransRule::Alternate {
-                dst_start: dst_start,
-                dst_stime: dst_stime.unwrap_or(2 * 3600),
-                dst_end: dst_end,
-                dst_etime: dst_etime.unwrap_or(2 * 3600),
-                std: Type {
-                    off: -std_off,
-                    is_dst: false,
-                    abbr: std_abbr.to_owned(),
-                },
-                dst: Type {
-                    off: -dst_off.unwrap_or(std_off - 3600),
-                    is_dst: true,
-                    abbr: dst_abbr.to_owned(),
-                },
-            }
-        }
-    )
-));
-
-#[cfg(test)]
-mod test {
-    use super::super::{TransRule, GenericDay, Type};
-    use super::super::nom;
-    use super::posixtz;
-
-    #[test]
-    fn test_posixtz() {
-        fn mwd(m: i32, w: i32, d: i32) -> GenericDay {
-            GenericDay::MWDRule {
-                month: m,
-                week: w,
-                wday: d,
-            }
-        }
-        fn std(off_h: i32, abbr: &str) -> Type {
-            Type {
-                off: off_h * 3600,
-                is_dst: false,
-                abbr: abbr.to_owned(),
-            }
-        }
-        fn dst(off_h: i32, abbr: &str) -> Type {
-            Type {
-                off: off_h * 3600,
-                is_dst: true,
-                abbr: abbr.to_owned(),
-            }
-        }
-
-        for &(sample, ref expected) in &[("AEST-10AEDT,M10.1.0,M4.1.0/3",
-                                     TransRule::Alternate {
-                                        dst_start: mwd(10, 1, 0),
-                                        dst_stime: 2 * 3600,
-                                        dst_end: mwd(4, 1, 0),
-                                        dst_etime: 3 * 3600,
-                                        std: std(10, "AEST"),
-                                        dst: dst(11, "AEDT"),
-                                    }),
-                                    ("CST6CDT,M4.1.0,M10.5.0",
-                                     TransRule::Alternate {
-                                        dst_start: mwd(4, 1, 0),
-                                        dst_stime: 2 * 3600,
-                                        dst_end: mwd(10, 5, 0),
-                                        dst_etime: 2 * 3600,
-                                        std: std(-6, "CST"),
-                                        dst: dst(-5, "CDT"),
-                                    }),
-                                    ("MSK-3", TransRule::Fixed(std(3, "MSK"))),
-                                    ("ART3", TransRule::Fixed(std(-3, "ART"))),
-                                    ("WET0WEST,M3.5.0/1,M10.5.0",
-                                     TransRule::Alternate {
-                                        dst_start: mwd(3, 5, 0),
-                                        dst_stime: 1 * 3600,
-                                        dst_end: mwd(10, 5, 0),
-                                        dst_etime: 2 * 3600,
-                                        std: std(0, "WET"),
-                                        dst: dst(1, "WEST"),
-                                    })] {
-            match posixtz(sample) {
-                nom::IResult::Done(_, ref r) if *r == *expected => (),
-                _ => panic!("{} != {:?}", sample, expected),
-            }
-        }
-    }
 }
