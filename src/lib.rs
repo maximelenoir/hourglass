@@ -237,18 +237,9 @@ impl Timezone {
 
     /// Return the `Datetime` representing now, relative to this `Timezone`.
     pub fn now(&self) -> Datetime {
-        let mut ts = libc::timespec {
-            tv_sec: 0,
-            tv_nsec: 0,
-        };
-
-        unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts) };
-
         Datetime {
             tz: self,
-            sec: ts.tv_sec,
-            nano: ts.tv_nsec as i32,
-            is_60th_sec: false,
+            stamp: Timespec::now(),
         }
     }
 
@@ -297,15 +288,9 @@ impl Timezone {
     /// however, `unix` will always choose the non-leap second. Return
     /// an `InputError` if `nano` ∉ [0, 999999999].
     pub fn unix(&self, stamp: i64, nano: i32) -> Result<Datetime, InputError> {
-        if nano < 0 || nano > 999_999_999 {
-            return Err(InputError::InvalidNano);
-        }
-
         Ok(Datetime {
             tz: self,
-            sec: stamp,
-            nano: nano,
-            is_60th_sec: false,
+            stamp: try!(Timespec::unix(stamp, nano)),
         })
     }
 
@@ -388,16 +373,20 @@ impl Timezone {
                 // 59 instead of 60 seconds) because of the lack of
                 // leap second support in unix timestamp. We need to
                 // adjust now.
-                sec: sec + 1,
-                nano: nano,
-                is_60th_sec: true,
+                stamp: Timespec {
+                    sec: sec + 1,
+                    nano: nano,
+                    leaping: true,
+                },
             })
         } else {
             Ok(Datetime {
                 tz: self,
-                sec: sec,
-                nano: nano,
-                is_60th_sec: false,
+                stamp: Timespec {
+                    sec: sec,
+                    nano: nano,
+                    leaping: false,
+                },
             })
         }
     }
@@ -623,6 +612,308 @@ impl TransRule {
     }
 }
 
+/// An offset from the Unix Epoch.
+///
+/// `Timespec` is the building block of `Datetime` and can be converted
+/// from and to a `Datetime`. It is intrinsically expressed in the `UTC`
+/// timezone since it holds the number of seconds elapsed since the Unix
+/// Epoch `1970-01-01T00:00:00Z` and therefore is not ambiguous.
+///
+/// It is equivalent to a `Datetime` without `Timezone` information and
+/// therefore does not have access to as much methods as its counterpart.
+/// For example, its `date` representation cannot be computed.  In return,
+/// the type is simpler and easier to handle and move around. Like
+/// `Datetime`, `Timespec` is leap second aware.
+#[derive(Clone, Copy, Debug)]
+pub struct Timespec {
+    /// The offset since Unix Epoch. This is *not* the number
+    /// of SI seconds since Unix Epoch because of leap seconds.
+    sec: i64,
+    /// The nanoseconds for the current second.
+    nano: i32,
+    /// Mark the leaping second.
+    leaping: bool,
+}
+
+impl Timespec {
+    /// Return the `Timespec` representing now.
+    pub fn now() -> Timespec {
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+
+        unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts) };
+
+        Timespec {
+            sec: ts.tv_sec,
+            nano: ts.tv_nsec as i32,
+            leaping: false,
+        }
+    }
+
+    /// Create a new `Timespec` from a Unix timestamp. An `InputError`
+    /// is returned if `nano` ∉ [0, 999999999].
+    pub fn unix(stamp: i64, nano: i32) -> Result<Timespec, InputError> {
+        if nano < 0 || nano > 999_999_999 {
+            return Err(InputError::InvalidNano);
+        }
+
+        Ok(Timespec {
+            sec: stamp,
+            nano: nano,
+            leaping: false,
+        })
+    }
+
+    /// Get the number of Unix seconds since the Unix Epoch.
+    pub fn seconds(&self) -> i64 {
+        self.sec
+    }
+
+    /// Get the number of nanoseconds elapsed for the current second.
+    pub fn nanoseconds(&self) -> i32 {
+        self.nano
+    }
+
+    /// Convert the `Timespec` into a `Datetime`, given a `Timezone`.
+    /// Note the `Timespec` is always expressed as a Unix time, so
+    /// converting to a `Datetime` won't interpret the `Timespec` as
+    /// anything other than an offset from Unix Epoch in `UTC` timezone.
+    pub fn to_datetime<'a>(&self, tz: &'a Timezone) -> Datetime<'a> {
+        Datetime {
+            tz: tz,
+            stamp: *self,
+        }
+    }
+}
+
+impl PartialEq<Timespec> for Timespec {
+    fn eq(&self, other: &Timespec) -> bool {
+        self.cmp(&other) == Ordering::Equal
+    }
+}
+
+impl Eq for Timespec {}
+
+impl PartialOrd<Timespec> for Timespec {
+    fn partial_cmp(&self, other: &Timespec) -> Option<Ordering> {
+        let cmp_sec = self.sec.cmp(&other.sec);
+        if let Ordering::Equal = cmp_sec {
+            // Having the 60th sec tag means
+            // that the time is Ordering::Less than
+            // the other time.
+            let cmp_leap = other.leaping.cmp(&self.leaping);
+            if let Ordering::Equal = cmp_leap {
+                Some(self.nano.cmp(&other.nano))
+            } else {
+                Some(cmp_leap)
+            }
+        } else {
+            Some(cmp_sec)
+        }
+    }
+}
+
+impl Ord for Timespec {
+    fn cmp(&self, other: &Timespec) -> Ordering {
+        self.partial_cmp(other).unwrap()
+    }
+}
+
+impl Add<Deltatime> for Timespec {
+    type Output = Timespec;
+    fn add(mut self, rhs: Deltatime) -> Self::Output {
+        match rhs.0 {
+            Delta::Nanoseconds(nano) => {
+                if nano < 0 {
+                    let nano = -nano;
+                    if self.nano as i64 >= nano {
+                        self.nano -= nano as i32;
+                        return self;
+                    }
+
+                    let nano = nano - self.nano as i64;
+                    let sec = nano / 1_000_000_000 + 1;
+                    let nano_left = 1_000_000_000 - (nano - (sec - 1) * 1_000_000_000);
+                    let mut t = self + Deltatime(Delta::Seconds(-sec));
+                    t.nano = nano_left as i32;
+                    t
+                } else {
+                    let nano = nano + self.nano as i64;
+                    if nano < 1_000_000_000 {
+                        self.nano = nano as i32;
+                        return self;
+                    }
+
+                    // Let's mentally empty the dt's nano counter. They will
+                    // be added later. This trick is to avoid landing on a
+                    // leap second when we add the remaining nano after the
+                    // full seconds were added.
+                    let sec = nano / 1_000_000_000;
+                    let nano = nano - sec * 1_000_000_000;
+                    let mut t = self + Deltatime(Delta::Seconds(sec));
+                    t.nano = nano as i32;
+                    t
+                }
+            }
+            Delta::Seconds(mut sec) => {
+                // TODO: version without loops ?
+                if sec < 0 {
+                    sec = -sec;
+                    while sec != 0 {
+                        match LEAP_SECONDS.binary_search(&self.sec) {
+                            Err(0) => {
+                                // We won't encounter any leap second.
+                                self.sec -= sec;
+                                return self;
+                            }
+                            Err(s) => {
+                                let prev_leap = LEAP_SECONDS[s - 1];
+                                let prev_leap_in_sec = self.sec - prev_leap;
+                                if sec <= prev_leap_in_sec {
+                                    // We're done before reaching the
+                                    // previous leap second.
+                                    self.sec -= sec;
+                                    return self;
+                                } else if sec == prev_leap_in_sec + 1 {
+                                    // We've landed on the leap second.
+                                    self.leaping = true;
+                                    self.sec = prev_leap;
+                                    return self;
+                                } else {
+                                    // We jump right before the leap second
+                                    // while retaining 1 sec from the counter.
+                                    self.sec = prev_leap - 1;
+                                    sec -= prev_leap_in_sec + 2;
+                                }
+                            }
+                            Ok(_) => {
+                                // We start on an ambiguous unix timestamp.
+                                if self.leaping {
+                                    self.leaping = false;
+                                    self.sec -= 1;
+                                } else {
+                                    self.leaping = true;
+                                }
+                                sec -= 1;
+                            }
+                        }
+                    }
+                    self
+                } else {
+                    while sec != 0 {
+                        match LEAP_SECONDS.binary_search(&self.sec) {
+                            Err(s) if s == LEAP_SECONDS.len() => {
+                                // No leap seconds after current datetime.
+                                // So we can safely add all the second and
+                                // return the result.
+                                self.sec += sec;
+                                return self;
+                            }
+                            Err(s) => {
+                                let next_leap = LEAP_SECONDS[s];
+                                let next_leap_in_sec = next_leap - self.sec;
+                                if sec < next_leap_in_sec {
+                                    // We're done before even reaching the next
+                                    // leap second.
+                                    self.sec += sec;
+                                    return self;
+                                } else if sec == next_leap_in_sec {
+                                    // We've landed on the leap second.
+                                    self.sec = next_leap;
+                                    self.leaping = true;
+                                    return self;
+                                } else {
+                                    // Take into account the leap second
+                                    // and countinue with whatever is left
+                                    // of our second counter.
+                                    self.sec = next_leap;
+                                    sec -= next_leap_in_sec + 1;
+                                }
+                            }
+                            Ok(_) => {
+                                // We start on an ambiguous unix timestamp.
+                                // If we know we're on leap second, just
+                                // remove the leap marker and remove
+                                // one second. Otherwise, just move one
+                                // second. Either way, we just jump out of
+                                // the ambiguous zone, without having our
+                                // second counter < 0.
+                                if self.leaping {
+                                    self.leaping = false;
+                                } else {
+                                    self.sec += 1;
+                                }
+                                sec -= 1;
+                            }
+                        }
+                    }
+                    self
+                }
+            }
+            Delta::Days(day) => {
+                self.leaping = false;
+                self.sec += day * 86400;
+                self
+            }
+        }
+    }
+}
+
+impl Sub<Deltatime> for Timespec {
+    type Output = Timespec;
+    fn sub(self, rhs: Deltatime) -> Self::Output {
+        self + (-rhs)
+    }
+}
+
+impl Sub<Timespec> for Timespec {
+    type Output = Deltatime;
+    fn sub(self, rhs: Timespec) -> Self::Output {
+        if self < rhs {
+            return -(rhs - self);
+        }
+
+        // rhs <= self
+        let add_sec = match (LEAP_SECONDS.binary_search(&rhs.sec),
+                             LEAP_SECONDS.binary_search(&self.sec)) {
+            (Err(i), Err(j)) => (j - i) as i64,
+            (Err(i), Ok(j)) => {
+                (j - i) as i64 +
+                if self.leaping {
+                    0i64
+                } else {
+                    1i64
+                }
+            }
+            (Ok(i), Err(j)) => {
+                (j - i) as i64 +
+                if rhs.leaping {
+                    0i64
+                } else {
+                    -1i64
+                }
+            }
+            (Ok(i), Ok(j)) => {
+                (j - i) as i64 +
+                if rhs.leaping {
+                    0i64
+                } else {
+                    -1i64
+                } +
+                if self.leaping {
+                    0i64
+                } else {
+                    1i64
+                }
+            }
+        };
+        Deltatime::nanoseconds((self.sec - rhs.sec + add_sec) * 1_000_000_000 +
+                               (self.nano - rhs.nano) as i64)
+    }
+}
+
 /// A precise point in time along associated to a `Timezone`.
 ///
 /// The `Datetime` cannot be created on its own as it depends on
@@ -644,16 +935,8 @@ impl TransRule {
 pub struct Datetime<'a> {
     /// The associated timezone.
     tz: &'a Timezone,
-    /// The offset since Unix Epoch. This is *not* the number
-    /// of SI seconds since Unix Epoch because of leap seconds.
-    sec: i64,
-    /// The nanosecond for the current second.
-    nano: i32,
-    /// Remove ambiguous datetime on leap. When stamp
-    /// corresponds to a leap second, use this field
-    /// to know whether the `Datetime` corresponds to
-    /// the 59th or the 60th second.
-    is_60th_sec: bool,
+    /// The offset since Unix Epoch.
+    stamp: Timespec,
 }
 
 impl<'a> Datetime<'a> {
@@ -661,22 +944,20 @@ impl<'a> Datetime<'a> {
     pub fn project<'b>(&self, tz: &'b Timezone) -> Datetime<'b> {
         Datetime {
             tz: tz,
-            sec: self.sec,
-            nano: self.nano,
-            is_60th_sec: self.is_60th_sec,
+            stamp: self.stamp,
         }
     }
 
     /// Return the tm in the associated `Timezone`.
     fn tm(&self) -> libc::tm {
-        let offset = self.tz.offset(self.sec).off;
-        let mut tm = stamp_to_tm(self.sec + offset as i64 +
-                                 if self.is_60th_sec {
+        let offset = self.tz.offset(self.stamp.sec).off;
+        let mut tm = stamp_to_tm(self.stamp.sec + offset as i64 +
+                                 if self.stamp.leaping {
             -1
         } else {
             0
         });
-        if self.is_60th_sec {
+        if self.stamp.leaping {
             tm.tm_sec = 60;
         }
         tm
@@ -739,13 +1020,22 @@ impl<'a> Datetime<'a> {
     pub fn time(&self) -> (i32, i32, i32, i32) {
         let tm = self.tm();
         let (h, m, s) = Self::tm_to_time(&tm);
-        (h, m, s, self.nano)
+        (h, m, s, self.stamp.nano)
     }
 
     /// Return the unix timestamp. This is the number of unix seconds
-    /// since 1970-01-01T00:00:00Z.
+    /// since `1970-01-01T00:00:00Z`.
     pub fn unix(&self) -> i64 {
-        self.sec
+        self.stamp.sec
+    }
+
+    /// Convert the `Datetime` to a `Timespec`, disregarding the
+    /// `Timezone`. The associated `Timezone` does not have any impact on
+    /// the resulting `Timespec`. Therefore, as long as two `Datetime`
+    /// with different `Timezone` match the same point in time, their
+    /// resulting `Timespec` will be equal.
+    pub fn to_timespec(&self) -> Timespec {
+        self.stamp
     }
 
     /// Format the `Datetime` according to the provided `format`.
@@ -781,7 +1071,7 @@ impl<'a> Datetime<'a> {
         let tm = self.tm();
         let date = Self::tm_to_date(&tm);
         let time = Self::tm_to_time(&tm);
-        let off = self.tz.offset(self.sec);
+        let off = self.tz.offset(self.stamp.sec);
 
         let mut chars = fmt.chars();
         loop {
@@ -798,9 +1088,11 @@ impl<'a> Datetime<'a> {
                         Some('H') => write!(out, "{:02}", time.0).unwrap_or(()),
                         Some('M') => write!(out, "{:02}", time.1).unwrap_or(()),
                         Some('S') => write!(out, "{:02}", time.2).unwrap_or(()),
-                        Some('3') => write!(out, "{:03}", self.nano / 1_000_000).unwrap_or(()),
-                        Some('6') => write!(out, "{:06}", self.nano / 1_000).unwrap_or(()),
-                        Some('9') => write!(out, "{:09}", self.nano).unwrap_or(()),
+                        Some('3') => {
+                            write!(out, "{:03}", self.stamp.nano / 1_000_000).unwrap_or(())
+                        }
+                        Some('6') => write!(out, "{:06}", self.stamp.nano / 1_000).unwrap_or(()),
+                        Some('9') => write!(out, "{:09}", self.stamp.nano).unwrap_or(()),
                         Some('x') => {
                             write!(out, "{:+03}:{:02}", off.off / 3600, off.off % 3600 / 60)
                                 .unwrap_or(())
@@ -841,7 +1133,7 @@ impl<'a> Datetime<'a> {
 
 impl<'a> PartialEq<Datetime<'a>> for Datetime<'a> {
     fn eq(&self, other: &Datetime) -> bool {
-        self.cmp(&other) == Ordering::Equal
+        self.stamp.eq(&other.stamp)
     }
 }
 
@@ -849,165 +1141,22 @@ impl<'a> Eq for Datetime<'a> {}
 
 impl<'a> PartialOrd<Datetime<'a>> for Datetime<'a> {
     fn partial_cmp(&self, other: &Datetime) -> Option<Ordering> {
-        let cmp_sec = self.sec.cmp(&other.sec);
-        if let Ordering::Equal = cmp_sec {
-            // Having the 60th sec tag means
-            // that the time is Ordering::Less than
-            // the other time.
-            let cmp_leap = other.is_60th_sec.cmp(&self.is_60th_sec);
-            if let Ordering::Equal = cmp_leap {
-                Some(self.nano.cmp(&other.nano))
-            } else {
-                Some(cmp_leap)
-            }
-        } else {
-            Some(cmp_sec)
-        }
+        self.stamp.partial_cmp(&other.stamp)
     }
 }
 
 impl<'a> Ord for Datetime<'a> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.partial_cmp(other).unwrap()
+    fn cmp(&self, other: &Datetime) -> Ordering {
+        self.stamp.cmp(&other.stamp)
     }
 }
 
 impl<'a> Add<Deltatime> for Datetime<'a> {
     type Output = Datetime<'a>;
-    fn add(mut self, rhs: Deltatime) -> Self::Output {
-        match rhs.0 {
-            Delta::Nanoseconds(nano) => {
-                if nano < 0 {
-                    let nano = -nano;
-                    if self.nano as i64 >= nano {
-                        self.nano -= nano as i32;
-                        return self;
-                    }
-
-                    let nano = nano - self.nano as i64;
-                    let sec = nano / 1_000_000_000 + 1;
-                    let nano_left = 1_000_000_000 - (nano - (sec - 1) * 1_000_000_000);
-                    let mut t = self + Deltatime(Delta::Seconds(-sec));
-                    t.nano = nano_left as i32;
-                    t
-                } else {
-                    let nano = nano + self.nano as i64;
-                    if nano < 1_000_000_000 {
-                        self.nano = nano as i32;
-                        return self;
-                    }
-
-                    // Let's mentally empty the dt's nano counter. They will
-                    // be added later. This trick is to avoid landing on a
-                    // leap second when we add the remaining nano after the
-                    // full seconds were added.
-                    let sec = nano / 1_000_000_000;
-                    let nano = nano - sec * 1_000_000_000;
-                    let mut t = self + Deltatime(Delta::Seconds(sec));
-                    t.nano = nano as i32;
-                    t
-                }
-            }
-            Delta::Seconds(mut sec) => {
-                // TODO: version without loops ?
-                if sec < 0 {
-                    sec = -sec;
-                    while sec != 0 {
-                        match LEAP_SECONDS.binary_search(&self.sec) {
-                            Err(0) => {
-                                // We won't encounter any leap second.
-                                self.sec -= sec;
-                                return self;
-                            }
-                            Err(s) => {
-                                let prev_leap = LEAP_SECONDS[s - 1];
-                                let prev_leap_in_sec = self.sec - prev_leap;
-                                if sec <= prev_leap_in_sec {
-                                    // We're done before reaching the
-                                    // previous leap second.
-                                    self.sec -= sec;
-                                    return self;
-                                } else if sec == prev_leap_in_sec + 1 {
-                                    // We've landed on the leap second.
-                                    self.is_60th_sec = true;
-                                    self.sec = prev_leap;
-                                    return self;
-                                } else {
-                                    // We jump right before the leap second
-                                    // while retaining 1 sec from the counter.
-                                    self.sec = prev_leap - 1;
-                                    sec -= prev_leap_in_sec + 2;
-                                }
-                            }
-                            Ok(_) => {
-                                // We start on an ambiguous unix timestamp.
-                                if self.is_60th_sec {
-                                    self.is_60th_sec = false;
-                                    self.sec -= 1;
-                                } else {
-                                    self.is_60th_sec = true;
-                                }
-                                sec -= 1;
-                            }
-                        }
-                    }
-                    self
-                } else {
-                    while sec != 0 {
-                        match LEAP_SECONDS.binary_search(&self.sec) {
-                            Err(s) if s == LEAP_SECONDS.len() => {
-                                // No leap seconds after current datetime.
-                                // So we can safely add all the second and
-                                // return the result.
-                                self.sec += sec;
-                                return self;
-                            }
-                            Err(s) => {
-                                let next_leap = LEAP_SECONDS[s];
-                                let next_leap_in_sec = next_leap - self.sec;
-                                if sec < next_leap_in_sec {
-                                    // We're done before even reaching the next
-                                    // leap second.
-                                    self.sec += sec;
-                                    return self;
-                                } else if sec == next_leap_in_sec {
-                                    // We've landed on the leap second.
-                                    self.sec = next_leap;
-                                    self.is_60th_sec = true;
-                                    return self;
-                                } else {
-                                    // Take into account the leap second
-                                    // and countinue with whatever is left
-                                    // of our second counter.
-                                    self.sec = next_leap;
-                                    sec -= next_leap_in_sec + 1;
-                                }
-                            }
-                            Ok(_) => {
-                                // We start on an ambiguous unix timestamp.
-                                // If we know we're on leap second, just
-                                // remove the leap marker and remove
-                                // one second. Otherwise, just move one
-                                // second. Either way, we just jump out of
-                                // the ambiguous zone, without having our
-                                // second counter < 0.
-                                if self.is_60th_sec {
-                                    self.is_60th_sec = false;
-                                } else {
-                                    self.sec += 1;
-                                }
-                                sec -= 1;
-                            }
-                        }
-                    }
-                    self
-                }
-            }
-            Delta::Days(day) => {
-                self.is_60th_sec = false;
-                self.sec += day * 86400;
-                self
-            }
+    fn add(self, rhs: Deltatime) -> Self::Output {
+        Datetime {
+            tz: self.tz,
+            stamp: self.stamp + rhs,
         }
     }
 }
@@ -1015,53 +1164,17 @@ impl<'a> Add<Deltatime> for Datetime<'a> {
 impl<'a> Sub<Deltatime> for Datetime<'a> {
     type Output = Datetime<'a>;
     fn sub(self, rhs: Deltatime) -> Self::Output {
-        self + (-rhs)
+        Datetime {
+            tz: self.tz,
+            stamp: self.stamp - rhs,
+        }
     }
 }
 
 impl<'a> Sub<Datetime<'a>> for Datetime<'a> {
     type Output = Deltatime;
     fn sub(self, rhs: Datetime<'a>) -> Self::Output {
-        if self < rhs {
-            return -(rhs - self);
-        }
-
-        // rhs <= self
-        let add_sec = match (LEAP_SECONDS.binary_search(&rhs.sec),
-                             LEAP_SECONDS.binary_search(&self.sec)) {
-            (Err(i), Err(j)) => (j - i) as i64,
-            (Err(i), Ok(j)) => {
-                (j - i) as i64 +
-                if self.is_60th_sec {
-                    0i64
-                } else {
-                    1i64
-                }
-            }
-            (Ok(i), Err(j)) => {
-                (j - i) as i64 +
-                if rhs.is_60th_sec {
-                    0i64
-                } else {
-                    -1i64
-                }
-            }
-            (Ok(i), Ok(j)) => {
-                (j - i) as i64 +
-                if rhs.is_60th_sec {
-                    0i64
-                } else {
-                    -1i64
-                } +
-                if self.is_60th_sec {
-                    0i64
-                } else {
-                    1i64
-                }
-            }
-        };
-        Deltatime::nanoseconds((self.sec - rhs.sec + add_sec) * 1_000_000_000 +
-                               (self.nano - rhs.nano) as i64)
+        self.stamp - rhs.stamp
     }
 }
 
@@ -1448,8 +1561,8 @@ mod test {
                                                   ((1970, 1, 1, 1, 0, 0, 0), 3600),
                                                   ((2016, 1, 1, 0, 0, 0, 0), 1451606400)] {
             let dt = utc.datetime(y, m, d, h, mi, s, n).unwrap();
-            assert_eq!(dt.sec, stamp);
-            assert_eq!(dt.is_60th_sec, false);
+            assert_eq!(dt.stamp.sec, stamp);
+            assert_eq!(dt.stamp.leaping, false);
         }
     }
 
@@ -1458,9 +1571,9 @@ mod test {
         let utc = Timezone::utc();
         let t = utc.datetime(2015, 6, 30, 23, 59, 59, 0).unwrap();
         let t_leap = utc.datetime(2015, 6, 30, 23, 59, 60, 0).unwrap();
-        assert_eq!(t.is_60th_sec, false);
-        assert_eq!(t_leap.is_60th_sec, true);
-        assert_eq!(t.sec + 1, t_leap.sec);
+        assert_eq!(t.stamp.leaping, false);
+        assert_eq!(t_leap.stamp.leaping, true);
+        assert_eq!(t.stamp.sec + 1, t_leap.stamp.sec);
         assert_eq!(t_leap.format("%S").unwrap(), "60");
         assert_eq!(t_leap.date(), (2015, 6, 30));
         assert_eq!(t_leap.time(), (23, 59, 60, 0));
@@ -2027,5 +2140,19 @@ mod test {
                 _ => panic!("{} != {:?}", sample, expected),
             }
         }
+    }
+
+    #[test]
+    fn test_datetime_timespec_conv() {
+        let t = Timespec::now();
+        let utc = Timezone::utc();
+        let utc2 = Timezone::fixed(2 * 3600);
+        let dt_utc = t.to_datetime(&utc);
+        let dt_utc2 = t.to_datetime(&utc2);
+
+        let t0 = dt_utc.to_timespec();
+        let t2 = dt_utc2.to_timespec();
+        assert_eq!(t, t0);
+        assert_eq!(t0, t2);
     }
 }
