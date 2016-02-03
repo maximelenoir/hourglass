@@ -261,6 +261,11 @@ impl Timezone {
             tm_gmtoff: 0,
             tm_zone: ptr::null(),
         };
+
+        // We have to handle ending \x00 byte.
+        let s = try!(std::ffi::CString::new(s).map_err(|_| InputError::InvalidFormat));
+        let fmt = try!(std::ffi::CString::new(fmt).map_err(|_| InputError::InvalidFormat));
+
         let ret = unsafe {
             strptime(s.as_ptr() as *const libc::c_char,
                      fmt.as_ptr() as *const libc::c_char,
@@ -1632,6 +1637,9 @@ mod test {
         let t_utc = t.project(&utc);
         assert_eq!(t_utc.date(), (2006, 1, 2));
         assert_eq!(t_utc.time(), (14, 4, 5, 0));
+
+        paris.parse("2006-01", &"%Y-%m-%d"[..5]).unwrap();
+        paris.parse(&"2006-01-02"[..7], "%Y-%m").unwrap();
     }
 
     #[test]
