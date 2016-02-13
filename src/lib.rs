@@ -739,10 +739,17 @@ impl Add<Deltatime> for Timespec {
                     }
 
                     let nano = nano - self.nano as i64;
-                    let sec = nano / 1_000_000_000 + 1;
-                    let nano_left = 1_000_000_000 - (nano - (sec - 1) * 1_000_000_000);
+                    let (sec, nano) = {
+                        let s = nano / 1_000_000_000 + 1;
+                        let n = s * 1_000_000_000 - nano;
+                        if n == 1_000_000_000 {
+                            (s - 1, 0)
+                        } else {
+                            (s, n)
+                        }
+                    };
                     let mut t = self + Deltatime(Delta::Seconds(-sec));
-                    t.nano = nano_left as i32;
+                    t.nano = nano as i32;
                     t
                 } else {
                     let nano = nano + self.nano as i64;
@@ -1866,131 +1873,50 @@ mod test {
     fn test_add_deltatime() {
         let utc = Timezone::utc();
 
-        // nano
-        let t = utc.datetime(2015, 6, 30, 23, 59, 59, 999_999_999).unwrap();
-        let t = t + Deltatime::nanoseconds(2);
-        assert_eq!(t.date(), (2015, 6, 30));
-        assert_eq!(t.time(), (23, 59, 60, 1));
-
-        let t = utc.datetime(2015, 6, 30, 23, 59, 60, 1).unwrap();
-        let t = t + Deltatime::nanoseconds(-2);
-        assert_eq!(t.date(), (2015, 6, 30));
-        assert_eq!(t.time(), (23, 59, 59, 999_999_999));
-
-        let t = utc.datetime(2015, 6, 30, 23, 59, 60, 200_000_000).unwrap();
-        let t = t + Deltatime::nanoseconds(-300_000_000);
-        assert_eq!(t.date(), (2015, 6, 30));
-        assert_eq!(t.time(), (23, 59, 59, 900_000_000));
-
-        let t = utc.datetime(2015, 6, 30, 23, 59, 60, 1).unwrap();
-        let t = t + Deltatime::nanoseconds(-1_000_000_002);
-        assert_eq!(t.date(), (2015, 6, 30));
-        assert_eq!(t.time(), (23, 59, 58, 999_999_999));
-
-        // second regular -> leap
-        let t = utc.datetime(2015, 6, 30, 23, 59, 59, 0).unwrap();
-        let t = t + Deltatime::seconds(1);
-        assert_eq!(t.date(), (2015, 6, 30));
-        assert_eq!(t.time(), (23, 59, 60, 0));
-
-        let t = utc.datetime(2015, 6, 30, 23, 59, 60, 0).unwrap();
-        let t = t + Deltatime::seconds(-1);
-        assert_eq!(t.date(), (2015, 6, 30));
-        assert_eq!(t.time(), (23, 59, 59, 0));
-
-        // second leap -> regular
-        let t = utc.datetime(2015, 6, 30, 23, 59, 60, 0).unwrap();
-        let t = t + Deltatime::seconds(1);
-        assert_eq!(t.date(), (2015, 7, 1));
-        assert_eq!(t.time(), (0, 0, 0, 0));
-
-        let t = utc.datetime(2015, 7, 1, 0, 0, 0, 0).unwrap();
-        let t = t + Deltatime::seconds(-1);
-        assert_eq!(t.date(), (2015, 6, 30));
-        assert_eq!(t.time(), (23, 59, 60, 0));
-
-        // second regular -> regular
-        let t = utc.datetime(2015, 6, 30, 23, 59, 59, 0).unwrap();
-        let t = t + Deltatime::seconds(2);
-        assert_eq!(t.date(), (2015, 7, 1));
-        assert_eq!(t.time(), (0, 0, 0, 0));
-
-        let t = utc.datetime(2015, 7, 1, 0, 0, 0, 0).unwrap();
-        let t = t + Deltatime::seconds(-2);
-        assert_eq!(t.date(), (2015, 6, 30));
-        assert_eq!(t.time(), (23, 59, 59, 0));
-
-        let t = utc.datetime(2015, 7, 1, 0, 0, 0, 0).unwrap();
-        let t = t + Deltatime::seconds(1);
-        assert_eq!(t.date(), (2015, 7, 1));
-        assert_eq!(t.time(), (0, 0, 1, 0));
-
-        let t = utc.datetime(2015, 7, 1, 0, 0, 1, 0).unwrap();
-        let t = t + Deltatime::seconds(-1);
-        assert_eq!(t.date(), (2015, 7, 1));
-        assert_eq!(t.time(), (0, 0, 0, 0));
-
-        let t = utc.datetime(2015, 6, 30, 23, 59, 59, 0).unwrap();
-        let t = t + Deltatime::seconds(3);
-        assert_eq!(t.date(), (2015, 7, 1));
-        assert_eq!(t.time(), (0, 0, 1, 0));
-
-        let t = utc.datetime(2015, 7, 1, 0, 0, 1, 0).unwrap();
-        let t = t + Deltatime::seconds(-3);
-        assert_eq!(t.date(), (2015, 6, 30));
-        assert_eq!(t.time(), (23, 59, 59, 0));
-
-        let t = utc.datetime(2012, 1, 1, 0, 0, 0, 0).unwrap();
-        let t = t + Deltatime::seconds(126230402); // 4 years, 2 leaps
-        assert_eq!(t.date(), (2016, 1, 1));
-        assert_eq!(t.time(), (0, 0, 0, 0));
-
-        let t = utc.datetime(2016, 1, 1, 0, 0, 0, 0).unwrap();
-        let t = t + Deltatime::seconds(-126230402);
-        assert_eq!(t.date(), (2012, 1, 1));
-        assert_eq!(t.time(), (0, 0, 0, 0));
-
-        // second leap -> leap
-        let t = utc.datetime(2015, 6, 30, 23, 59, 60, 0).unwrap();
-        let t = t + Deltatime::seconds(0);
-        assert_eq!(t.date(), (2015, 6, 30));
-        assert_eq!(t.time(), (23, 59, 60, 0));
-
-        let t = utc.datetime(2012, 6, 30, 23, 59, 60, 0).unwrap();
-        let t = t + Deltatime::seconds(94608001);
-        assert_eq!(t.date(), (2015, 6, 30));
-        assert_eq!(t.time(), (23, 59, 60, 0));
-
-        let t = utc.datetime(2015, 6, 30, 23, 59, 60, 0).unwrap();
-        let t = t + Deltatime::seconds(-94608001);
-        assert_eq!(t.date(), (2012, 6, 30));
-        assert_eq!(t.time(), (23, 59, 60, 0));
-
-        // days
-        let t = utc.datetime(2016, 2, 29, 0, 0, 0, 0).unwrap();
-        let t = t + Deltatime::days(1);
-        assert_eq!(t.date(), (2016, 3, 1));
-        assert_eq!(t.time(), (0, 0, 0, 0));
-
-        let t = utc.datetime(2016, 3, 1, 0, 0, 0, 0).unwrap();
-        let t = t + Deltatime::days(-1);
-        assert_eq!(t.date(), (2016, 2, 29));
-        assert_eq!(t.time(), (0, 0, 0, 0));
-
-        let t = utc.datetime(2016, 1, 1, 0, 0, 0, 0).unwrap();
-        let t = t + Deltatime::days(366);
-        assert_eq!(t.date(), (2017, 1, 1));
-        assert_eq!(t.time(), (0, 0, 0, 0));
-
-        let t = utc.datetime(2017, 1, 1, 0, 0, 0, 0).unwrap();
-        let t = t + Deltatime::days(-366);
-        assert_eq!(t.date(), (2016, 1, 1));
-        assert_eq!(t.time(), (0, 0, 0, 0));
-
-        let t = utc.datetime(2015, 6, 30, 23, 59, 60, 0).unwrap();
-        let t = t + Deltatime::days(1);
-        assert_eq!(t.date(), (2015, 7, 2));
-        assert_eq!(t.time(), (0, 0, 0, 0));
+        for &(dt, delta, res) in &[
+            // nano
+            ((2015, 6, 30, 23, 59, 59, 999_999_999), Deltatime::nanoseconds(2), (2015, 6, 30, 23, 59, 60, 1)),
+            ((2015, 6, 30, 23, 59, 60, 1), Deltatime::nanoseconds(-2), (2015, 6, 30, 23, 59, 59, 999_999_999)),
+            ((2015, 6, 30, 23, 59, 60, 200_000_000), Deltatime::nanoseconds(-300_000_000), (2015, 6, 30, 23, 59, 59, 900_000_000)),
+            ((2015, 6, 30, 23, 59, 60, 1), Deltatime::nanoseconds(-1_000_000_002), (2015, 6, 30, 23, 59, 58, 999_999_999)),
+            ((2016, 1, 1, 0, 0, 0, 0), Deltatime::nanoseconds(1_500_000_000), (2016, 1, 1, 0, 0, 1, 500_000_000)),
+            ((2016, 1, 1, 0, 0, 1, 500_000_000), Deltatime::nanoseconds(-1_500_000_001), (2015, 12, 31, 23, 59, 59, 999_999_999)), /////////////////////////////////////::
+            ((2016, 1, 1, 0, 0, 1, 500_000_000), Deltatime::nanoseconds(-1_500_000_000), (2016, 1, 1, 0, 0, 0, 0)), /////////////////////////////////////::
+            ((2016, 1, 1, 0, 0, 0, 500_000_000), Deltatime::nanoseconds(500_000_001), (2016, 1, 1, 0, 0, 1, 1)),
+            ((2016, 1, 1, 0, 0, 1, 1), Deltatime::nanoseconds(-500_000_001), (2016, 1, 1, 0, 0, 0, 500_000_000)),
+            // regular -> leap
+            ((2015, 6, 30, 23, 59, 59, 0), Deltatime::seconds(1), (2015, 6, 30, 23, 59, 60, 0)),
+            ((2015, 6, 30 ,23, 59, 60, 0), Deltatime::seconds(-1), (2015, 6, 30, 23, 59, 59, 0)),
+            // leap -> regular
+            ((2015, 6, 30, 23, 59, 60, 0), Deltatime::seconds(1), (2015, 7, 1, 0, 0, 0, 0)),
+            ((2015, 7, 1, 0, 0, 0, 0), Deltatime::seconds(-1), (2015,6, 30, 23, 59, 60, 0)),
+            // regular -> regular
+            ((2015, 6, 30, 23, 59, 59, 0), Deltatime::seconds(2), (2015, 7, 1, 0, 0, 0, 0)),
+            ((2015, 7, 1, 0, 0, 0, 0), Deltatime::seconds(-2), (2015, 6, 30, 23, 59, 59, 0)),
+            ((2015, 7, 1, 0, 0, 0, 0), Deltatime::seconds(1), (2015, 7, 1, 0, 0, 1, 0)),
+            ((2015, 7, 1, 0, 0, 1, 0), Deltatime::seconds(-1), (2015, 7, 1, 0, 0, 0, 0)),
+            ((2015, 6, 30, 23, 59, 59, 0), Deltatime::seconds(3), (2015, 7, 1, 0, 0, 1, 0)),
+            ((2015, 7, 1, 0, 0, 1, 0), Deltatime::seconds(-3), (2015, 6, 30, 23, 59, 59, 0)),
+            ((2012, 1, 1, 0, 0, 0, 0), Deltatime::seconds(126230402), (2016, 1, 1, 0, 0, 0, 0)), // 4 years, 2 leaps
+            ((2016, 1, 1, 0, 0, 0, 0), Deltatime::seconds(-126230402), (2012, 1, 1, 0, 0, 0, 0)),
+            ((1969, 12, 31, 23, 59, 59, 0), Deltatime::seconds(1), (1970, 1, 1, 0, 0, 0, 0)),
+            ((1970, 1, 1, 0, 0, 0, 0), Deltatime::seconds(-1), (1969, 12, 31, 23, 59, 59, 0)),
+            // leap -> leap
+            ((2015, 6, 30, 23, 59, 60, 0), Deltatime::seconds(0), (2015, 6, 30, 23, 59, 60, 0)),
+            ((2012, 6, 30, 23, 59, 60, 0), Deltatime::seconds(94608001), (2015, 6, 30, 23, 59, 60, 0)),
+            ((2015, 6, 30, 23, 59, 60, 0), Deltatime::seconds(-94608001), (2012, 6, 30, 23, 59, 60, 0)),
+            // days
+            ((2016, 2, 29, 0, 0, 0, 0), Deltatime::days(1), (2016, 3, 1, 0, 0, 0, 0)),
+            ((2016, 3, 1, 0, 0, 0, 0), Deltatime::days(-1), (2016, 2, 29, 0, 0, 0, 0)),
+            ((2016, 1, 1, 0, 0, 0, 0), Deltatime::days(366), (2017, 1, 1, 0, 0, 0, 0)),
+            ((2017, 1, 1, 0, 0, 0, 0), Deltatime::days(-366), (2016, 1, 1, 0, 0, 0, 0)),
+            ((2015, 6, 30, 23, 59, 60, 0), Deltatime::days(1), (2015, 7, 2, 0, 0, 0, 0)),
+        ] {
+            let t = utc.datetime(dt.0, dt.1, dt.2, dt.3, dt.4, dt.5, dt.6).unwrap();
+            let t = t + delta;
+            assert_eq!(t.date(), (res.0, res.1, res.2));
+            assert_eq!(t.time(), (res.3, res.4, res.5, res.6));
+        }
     }
 
     #[test]
