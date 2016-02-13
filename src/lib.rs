@@ -1560,10 +1560,9 @@ extern "C" {
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use super::libc;
-    use super::nom;
-    use super::{GenericDay, Type, TransRule};
+    extern crate nom;
+    extern crate libc;
+    use super::{GenericDay, Type, TransRule, Deltatime, Timezone, Timespec};
     use super::{tm_to_stamp, stamp_to_tm, posixtz};
 
     #[test]
