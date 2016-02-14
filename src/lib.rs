@@ -80,12 +80,29 @@
 //! assert_eq!(t1 == t1, true);
 //! assert_eq!(t1 - t0, Deltatime::seconds(86401));
 //! ```
+//!
+//! `hourglass` also provides a convenient iterator for scheduling a loop
+//! body execution at regular time interval:
+//!
+//! ```rust
+//! use hourglass::{Timezone, Deltatime, Timespec, Every};
+//!
+//! let paris = Timezone::new("Europe/Paris").unwrap();
+//! let until = Timespec::now() + Deltatime::seconds(5);
+//!
+//! for t in Every::until(Deltatime::seconds(1), until) {
+//!     println!("it is {} in Paris", t.to_datetime(&paris).format("%H:%M:%S").unwrap());
+//! }
+//! ```
 
 #[macro_use]
 extern crate nom;
 extern crate libc;
 
 mod parse;
+mod iter;
+
+pub use iter::Every;
 
 use std::rc::Rc;
 use std::io;
