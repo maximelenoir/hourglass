@@ -1,6 +1,6 @@
 [package]
 name = "hourglass"
-version = "0.6.2"
+version = "0.6.3"
 authors = ["Maxime Lenoir <lenoir.maxime0@gmail.com>"]
 
 description = "Timezone-aware datetime library and time-related subtleties"
