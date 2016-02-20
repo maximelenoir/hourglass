@@ -2,6 +2,7 @@ use super::{Timespec, Deltatime};
 use std::iter::Iterator;
 use std::thread;
 use std::time;
+use std::cmp;
 
 /// An iterator used to schedule execution at regular time interval.
 ///
@@ -19,7 +20,7 @@ use std::time;
 /// for t in Every::until(Deltatime::seconds(1), until) {
 ///     println!("it is {} in Paris", t.to_datetime(&paris).format("%H:%M:%S").unwrap());
 /// }
-/// ```    
+/// ```
 pub struct Every {
     step: Deltatime,
     next: Timespec,
@@ -79,5 +80,133 @@ impl Iterator for Every {
         let now = Timespec::now();
         self.next = now + self.step;
         Some(now)
+    }
+}
+
+/// An iterator over a period of time.
+///
+/// `Range` provides an iterator that will go through `Timespec` values
+/// in a given range. A step argument, defined as a `Deltatime`, is used
+/// to control the pace of the iteration. `Range` offers support for
+/// both bounded and unbounded iterations.
+pub struct Range {
+    step: Deltatime,
+    next: Timespec,
+    until: Option<Timespec>,
+    cont: cmp::Ordering,
+}
+
+impl Range {
+    /// Create a new `Range` that will iterate from `start` to `end` with
+    /// `step` increments. The first iteration will yield `start`. If
+    /// `step` is a negative value, `Range` will yield decreasing values
+    /// of `Timespec` down to `end`. If `step` is positive, `Range` will
+    /// yield increasing values of `Timespec` up to `end`. If `step` is
+    /// zero, `start` will be returned forever. If `end` cannot be reached
+    /// from `start` with the given `step` (e.g. `end` is set after `start`
+    /// with a negative `step`), the iterator will not returned any
+    /// value. The upper bound is always excluded.
+    pub fn new(start: Timespec, end: Timespec, step: Deltatime) -> Range {
+        Range {
+            step: step,
+            next: start,
+            until: Some(end),
+            cont: if step > Deltatime::nanoseconds(0) {
+                cmp::Ordering::Less
+            } else {
+                cmp::Ordering::Greater
+            },
+        }
+    }
+
+    /// Create a new `Range` that will iterate indefinitely from `start`,
+    /// with `step` increments. The first iteration will yield `start`. If
+    /// `step` is a negative value, `Range` will yield decreasing
+    /// values of `Timespec`. If `step` is positive, `Range` will yield
+    /// increasing values of `Timespec`. If `step` is zero, `start`
+    /// will be returned forever. The upper bound is always excluded.
+    pub fn from(start: Timespec, step: Deltatime) -> Range {
+        Range {
+            step: step,
+            next: start,
+            until: None,
+            cont: cmp::Ordering::Equal, // Ignored
+        }
+    }
+}
+
+impl Iterator for Range {
+    type Item = Timespec;
+    fn next(&mut self) -> Option<Self::Item> {
+        let next = self.next;
+        self.next = self.next + self.step;
+
+        // Check if the iteration should stop.
+        match self.until {
+            None => Some(next),
+            Some(until) => {
+                if next.cmp(&until) == self.cont {
+                    Some(next)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::super::{Timespec, Deltatime};
+    use super::Range;
+
+    #[test]
+    fn test_range() {
+        let t0 = Timespec::unix(1456000227, 0).unwrap();
+        let t1 = Timespec::unix(1456000228, 0).unwrap();
+        let t2 = Timespec::unix(1456000229, 0).unwrap();
+        let t3 = Timespec::unix(1456000230, 0).unwrap();
+
+        let mut r = Range::new(t0, t1, Deltatime::seconds(1));
+        assert_eq!(r.next(), Some(t0));
+        assert_eq!(r.next(), None);
+
+        let mut r = Range::new(t0, t3, Deltatime::seconds(2));
+        assert_eq!(r.next(), Some(t0));
+        assert_eq!(r.next(), Some(t2));
+        assert_eq!(r.next(), None);
+
+        let mut r = Range::new(t1, t0, Deltatime::seconds(1));
+        assert_eq!(r.next(), None);
+
+        let mut r = Range::new(t1, t0, -Deltatime::seconds(1));
+        assert_eq!(r.next(), Some(t1));
+        assert_eq!(r.next(), None);
+
+        let mut r = Range::new(t3, t0, -Deltatime::seconds(2));
+        assert_eq!(r.next(), Some(t3));
+        assert_eq!(r.next(), Some(t1));
+        assert_eq!(r.next(), None);
+
+        let mut r = Range::new(t0, t1, -Deltatime::seconds(1));
+        assert_eq!(r.next(), None);
+    }
+
+    #[test]
+    fn test_range_unbounded() {
+        let t0 = Timespec::unix(1456000227, 0).unwrap();
+        let t1 = Timespec::unix(1456009999, 0).unwrap();
+
+        let unbounded = Range::from(t0, Deltatime::seconds(1));
+        let bounded = Range::new(t0, t1, Deltatime::seconds(1));
+        for (tu, tb) in unbounded.zip(bounded) {
+            assert_eq!(tu, tb);
+        }
+
+        let unbounded = Range::from(t1, -Deltatime::seconds(1));
+        let bounded = Range::new(t1, t0, -Deltatime::seconds(1));
+        for (tu, tb) in unbounded.zip(bounded) {
+            assert_eq!(tu, tb);
+        }
     }
 }

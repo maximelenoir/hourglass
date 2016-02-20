@@ -102,7 +102,7 @@ extern crate libc;
 mod parse;
 mod iter;
 
-pub use iter::Every;
+pub use iter::{Every, Range};
 
 use std::rc::Rc;
 use std::io;
