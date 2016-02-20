@@ -18,6 +18,8 @@
 //!
 //! ## Overview
 //!
+//! ### Timezone
+//!
 //! Because a datetime without a timezone is ambiguous and error-prone, `hourglass`
 //! only exposes a `Datetime` that is timezone-aware. The creation of a `Timezone`
 //! is the entry point of the API. `hourglass` provides several way of creating
@@ -48,6 +50,8 @@
 //! assert_eq!(t_utc.date(), (2015, 12, 24));
 //! assert_eq!(t_utc.time(), (23, 0, 0, 0));
 //! ```
+//!
+//! ### Arithmetic
 //!
 //! `Datetime` arithmetic is performed with a `Deltatime`. Several granularities
 //! are available when handling `Deltatime` and will yield different results:
@@ -81,7 +85,9 @@
 //! assert_eq!(t1 - t0, Deltatime::seconds(86401));
 //! ```
 //!
-//! `hourglass` also provides a convenient iterator for scheduling a loop
+//! ### Iterators
+//!
+//! `hourglass` also provides the `Every` iterator for scheduling a loop
 //! body execution at regular time interval:
 //!
 //! ```rust
@@ -92,6 +98,19 @@
 //!
 //! for t in Every::until(Deltatime::seconds(1), until) {
 //!     println!("it is {} in Paris", t.to_datetime(&paris).format("%H:%M:%S").unwrap());
+//! }
+//! ```
+//!
+//! The `Range` iterator can be used to iterate over a range of `Timespec`:
+//!
+//! ```rust
+//! use hourglass::{Deltatime, Timespec, Range};
+//!
+//! let now = Timespec::now();
+//! let then = now + Deltatime::minutes(1);
+//!
+//! for t in Range::new(now, then, Deltatime::seconds(1)) {
+//!     println!("tick {}", t.seconds());
 //! }
 //! ```
 
