@@ -120,6 +120,7 @@ extern crate libc;
 
 mod parse;
 mod iter;
+mod sys;
 
 pub use iter::{Every, Range};
 
@@ -295,7 +296,7 @@ impl Timezone {
             tm_isdst: 0,
             // Unused
             tm_gmtoff: 0,
-            tm_zone: ptr::null(),
+            tm_zone: sys::empty_tm_zone(),
         };
 
         // We have to handle ending \x00 byte.
@@ -396,7 +397,7 @@ impl Timezone {
             tm_yday: 0,
             tm_isdst: 0,
             tm_gmtoff: 0,
-            tm_zone: ptr::null(),
+            tm_zone: sys::empty_tm_zone(),
         };
 
         let mut sec = tm_to_stamp(&utc_dt);
@@ -679,16 +680,11 @@ pub struct Timespec {
 impl Timespec {
     /// Return the `Timespec` representing now.
     pub fn now() -> Timespec {
-        let mut ts = libc::timespec {
-            tv_sec: 0,
-            tv_nsec: 0,
-        };
 
-        unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts) };
-
+        let (tv_sec, tv_nsec) = sys::get_time();
         Timespec {
-            sec: ts.tv_sec,
-            nano: ts.tv_nsec as i32,
+            sec: tv_sec,
+            nano: tv_nsec as i32,
             leaping: false,
         }
     }
@@ -1553,7 +1549,7 @@ fn stamp_to_tm(sec: i64) -> libc::tm {
         tm_isdst: 0,
         // Unused
         tm_gmtoff: 0,
-        tm_zone: ptr::null(),
+        tm_zone: sys::empty_tm_zone(),
     };
     unsafe { libc::gmtime_r(&sec, &mut tm) };
     tm
@@ -1600,6 +1596,7 @@ mod test {
     extern crate libc;
     use super::{GenericDay, Type, TransRule, Deltatime, Timezone, Timespec};
     use super::{tm_to_stamp, stamp_to_tm, posixtz};
+    use super::sys;
 
     #[test]
     fn test_datetime() {
@@ -1701,7 +1698,7 @@ mod test {
                 tm_yday: 0,
                 tm_isdst: 0,
                 tm_gmtoff: 0,
-                tm_zone: ::std::ptr::null(),
+                tm_zone: sys::empty_tm_zone(),
             };
             // Make libc compute tm_wday.
             let stamp = tm_to_stamp(&tm);
@@ -1783,7 +1780,7 @@ mod test {
                 tm_yday: 0,
                 tm_isdst: 0,
                 tm_gmtoff: 0,
-                tm_zone: ::std::ptr::null(),
+                tm_zone: sys::empty_tm_zone(),
             };
             tm_to_stamp(&tm)
         }
