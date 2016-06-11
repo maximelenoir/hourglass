@@ -11,8 +11,15 @@ use self::byteorder::{BigEndian, ByteOrder};
 use std::str;
 
 pub fn load_timezone(timezone: &str) -> Result<Timezone, TzError> {
-    let mut filename = PathBuf::from("/usr/share/zoneinfo");
-    filename.push(timezone);
+    let filename = match timezone {
+        // os x doesn't symlink this from /usr/share/zoneinfo
+        "localtime" => PathBuf::from("/etc/localtime"),
+        _ => {
+            let mut filename = PathBuf::from("/usr/share/zoneinfo");
+            filename.push(timezone);
+            filename
+        }
+    };
     let filename = filename.as_path();
 
     let f = try!(File::open(filename));
