@@ -4,7 +4,7 @@ use super::{Type, Timezone, Transition, TransRule, TzError, posixtz};
 use super::nom::IResult;
 
 use std::rc::Rc;
-use std::io::{self, Read, BufReader, Seek, SeekFrom};
+use std::io::{Read, BufReader, Seek, SeekFrom};
 use std::fs::File;
 use std::path::PathBuf;
 use self::byteorder::{BigEndian, ByteOrder};
@@ -99,7 +99,7 @@ struct Header {
     abbr_size: i32,
 }
 
-fn parse_header<R: io::Read>(mut r: R) -> Result<Header, TzError> {
+fn parse_header<R: Read>(mut r: R) -> Result<Header, TzError> {
     let mut buff = [0u8; 44];
     try!(r.read_exact(&mut buff[..]));
 
@@ -125,7 +125,7 @@ fn parse_header<R: io::Read>(mut r: R) -> Result<Header, TzError> {
     })
 }
 
-fn parse_trans_32<R: io::Read>(mut r: R, n: i32) -> Result<Vec<i64>, TzError> {
+fn parse_trans_32<R: Read>(mut r: R, n: i32) -> Result<Vec<i64>, TzError> {
     let mut trans = Vec::with_capacity(n as usize);
     let mut buff = [0u8; 4];
     for _ in 0..n {
@@ -136,7 +136,7 @@ fn parse_trans_32<R: io::Read>(mut r: R, n: i32) -> Result<Vec<i64>, TzError> {
     Ok(trans)
 }
 
-fn parse_trans_64<R: io::Read>(mut r: R, n: i32) -> Result<Vec<i64>, TzError> {
+fn parse_trans_64<R: Read>(mut r: R, n: i32) -> Result<Vec<i64>, TzError> {
     let mut trans = Vec::with_capacity(n as usize);
     let mut buff = [0u8; 8];
     for _ in 0..n {
@@ -147,13 +147,13 @@ fn parse_trans_64<R: io::Read>(mut r: R, n: i32) -> Result<Vec<i64>, TzError> {
     Ok(trans)
 }
 
-fn parse_type_idx<R: io::Read>(mut r: R, n: i32) -> Result<Vec<u8>, TzError> {
+fn parse_type_idx<R: Read>(mut r: R, n: i32) -> Result<Vec<u8>, TzError> {
     let mut idx = vec![0u8; n as usize];
     try!(r.read_exact(&mut idx[..]));
     Ok(idx)
 }
 
-fn parse_types<R: io::Read>(mut r: R, n: i32) -> Result<Vec<(i32, bool, u8)>, TzError> {
+fn parse_types<R: Read>(mut r: R, n: i32) -> Result<Vec<(i32, bool, u8)>, TzError> {
     let mut types = Vec::with_capacity(n as usize);
     let mut buff = [0u8; 6];
     for _ in 0..n {
@@ -163,7 +163,7 @@ fn parse_types<R: io::Read>(mut r: R, n: i32) -> Result<Vec<(i32, bool, u8)>, Tz
     Ok(types)
 }
 
-fn parse_abbrs<R: io::Read>(mut r: R, len: i32) -> Result<Vec<(u8, String)>, TzError> {
+fn parse_abbrs<R: Read>(mut r: R, len: i32) -> Result<Vec<(u8, String)>, TzError> {
     let mut buff = vec![0u8; len as usize];
     try!(r.read_exact(&mut buff[..]));
 
@@ -182,7 +182,7 @@ fn parse_abbrs<R: io::Read>(mut r: R, len: i32) -> Result<Vec<(u8, String)>, TzE
     Ok(abbrs)
 }
 
-fn parse_posix_tz<R: io::Read>(mut r: R) -> Result<TransRule, TzError> {
+fn parse_posix_tz<R: Read>(mut r: R) -> Result<TransRule, TzError> {
     let mut s = String::new();
     try!(r.read_to_string(&mut s));
 
@@ -197,7 +197,7 @@ fn parse_posix_tz<R: io::Read>(mut r: R) -> Result<TransRule, TzError> {
     }
 }
 
-fn skip<R: io::Seek>(mut r: R, len: i32) -> Result<(), TzError> {
+fn skip<R: Seek>(mut r: R, len: i32) -> Result<(), TzError> {
     try!(r.seek(SeekFrom::Current(len as i64)));
     Ok(())
 }
