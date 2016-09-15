@@ -1366,7 +1366,8 @@ const LEAP_SECONDS: &'static [i64] = &[2272060800 - NTP_TO_UNIX,
                                        3345062400 - NTP_TO_UNIX,
                                        3439756800 - NTP_TO_UNIX,
                                        3550089600 - NTP_TO_UNIX,
-                                       3644697600 - NTP_TO_UNIX];
+                                       3644697600 - NTP_TO_UNIX,
+                                       3692217600 - NTP_TO_UNIX];
 
 /// A delta of time used in `Datetime` arithmetic.
 ///
