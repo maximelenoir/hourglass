@@ -1551,7 +1551,17 @@ fn stamp_to_tm(sec: i64) -> libc::tm {
         tm_gmtoff: 0,
         tm_zone: sys::empty_tm_zone(),
     };
-    unsafe { libc::gmtime_r(&sec, &mut tm) };
+
+    #[cfg(target_pointer_width="32")]
+    fn gmtime_r(sec: i64, tm: &mut libc::tm) {
+        unsafe { libc::gmtime_r(&(sec as i32), tm) };
+    }
+    #[cfg(target_pointer_width="64")]
+    fn gmtime_r(sec: i64, tm: &mut libc::tm) {
+        unsafe { libc::gmtime_r(&sec, tm) };
+    }
+
+    gmtime_r(sec, &mut tm);
     tm
 }
 
