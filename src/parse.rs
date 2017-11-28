@@ -34,7 +34,7 @@ pub fn load_timezone(timezone: &str) -> Result<Timezone, TzError> {
             let abbrs = try!(parse_abbrs(&mut r, hdr.abbr_size));
             (trans, type_idx, types, abbrs, None)
         }
-        2 => {
+        2 | 3 => {
             // We're skipping the entire v1 file since
             // at least the same data will be found in TZFile 2.
             let to_skip = hdr.transitions * 5 + hdr.types * 6 + hdr.abbr_size * 1 +
@@ -44,7 +44,7 @@ pub fn load_timezone(timezone: &str) -> Result<Timezone, TzError> {
 
             // Parse the second header.
             let hdr = try!(parse_header(&mut r));
-            if hdr.version != 2 {
+            if hdr.version != 2 && hdr.version != 3 {
                 return Err(TzError::InvalidTzFile);
             }
 
@@ -111,6 +111,7 @@ fn parse_header<R: Read>(mut r: R) -> Result<Header, TzError> {
     let version = match buff[4] {
         0x00 => 1,
         0x32 => 2,
+        0x33 => 3,
         _ => return Err(TzError::UnsupportedTzFile),
     };
 
