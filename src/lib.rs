@@ -437,6 +437,16 @@ impl Timezone {
 // Match an ascii number and convert it to an i32.
 named!(num<&str, i32>, map_res!(digit, FromStr::from_str));
 
+// Match a timezone abbreviation.
+named!(tzabbr<&str, &str>, alt!(
+    delimited!(
+        tag_s!("<"),
+        take_until_s!(">"),
+        tag_s!(">")
+    ) |
+    alpha
+));
+
 // Match "hh[:mm[:ss]]" and returns the number of seconds.
 named!(hhmmss<&str, i32>,
     chain!(
@@ -490,7 +500,7 @@ named!(genday<&str, GenericDay>,
 // Match a POSIX TZ definition "std offset[dst[offset][,start[/time],end[/time]]]"
 named!(posixtz<&str, TransRule>, alt!(
     chain!(
-        std_abbr: alpha ~
+        std_abbr: tzabbr ~
         std_off: signed_hhmmss ~
         eof,
         || {
@@ -504,9 +514,9 @@ named!(posixtz<&str, TransRule>, alt!(
         }
     ) |
     chain!(
-        std_abbr: alpha ~
+        std_abbr: tzabbr ~
         std_off: signed_hhmmss ~
-        dst_abbr: alpha ~
+        dst_abbr: tzabbr ~
         dst_off: opt!(complete!(signed_hhmmss)) ~
         tag_s!(",") ~
         dst_start: genday ~
@@ -2164,6 +2174,7 @@ mod test {
                                              std: std(-6, "CST"),
                                              dst: dst(-5, "CDT"),
                                          }),
+                                         ("<+07>-7", TransRule::Fixed(std(7, "+07"))),
                                          ("MSK-3", TransRule::Fixed(std(3, "MSK"))),
                                          ("ART3", TransRule::Fixed(std(-3, "ART"))),
                                          ("WET0WEST,M3.5.0/1,M10.5.0",
@@ -2176,7 +2187,7 @@ mod test {
                                              dst: dst(1, "WEST"),
                                          })] {
             match posixtz(sample) {
-                nom::IResult::Done(_, ref r) if *r == *expected => (),
+                nom::IResult::Done(_, ref r) => assert_eq!(*r, *expected),
                 _ => panic!("{} != {:?}", sample, expected),
             }
         }
