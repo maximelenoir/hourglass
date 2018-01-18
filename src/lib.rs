@@ -124,7 +124,7 @@ mod sys;
 
 pub use iter::{Every, Range};
 
-use std::rc::Rc;
+use std::sync::Arc;
 use std::io;
 use std::fmt;
 use std::ptr;
@@ -164,7 +164,7 @@ pub struct Timezone {
 #[derive(Debug)]
 struct Transition {
     utc: i64,
-    ttype: Rc<Type>,
+    ttype: Arc<Type>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -227,7 +227,7 @@ impl Timezone {
         Timezone {
             trans: vec![Transition {
                             utc: std::i64::MIN,
-                            ttype: Rc::new(Type {
+                            ttype: Arc::new(Type {
                                 off: sec,
                                 is_dst: false,
                                 abbr: "".to_owned(),

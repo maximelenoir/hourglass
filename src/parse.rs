@@ -3,7 +3,7 @@ extern crate byteorder;
 use super::{Type, Timezone, Transition, TransRule, TzError, posixtz};
 use super::nom::IResult;
 
-use std::rc::Rc;
+use std::sync::Arc;
 use std::io::{Read, BufReader, Seek, SeekFrom};
 use std::fs::File;
 use std::path::PathBuf;
@@ -61,9 +61,9 @@ pub fn load_timezone(timezone: &str) -> Result<Timezone, TzError> {
         _ => unreachable!(),
     };
 
-    let types: Vec<Rc<Type>> = types.iter()
+    let types: Vec<Arc<Type>> = types.iter()
                                     .map(|&(off, is_dst, abbr_idx)| {
-                                        Rc::new(Type {
+                                        Arc::new(Type {
                                             off: off,
                                             is_dst: is_dst,
                                             abbr: abbrs.iter()
